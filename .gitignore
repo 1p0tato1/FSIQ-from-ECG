@@ -1,0 +1,15 @@
+data/*
+!data/.gitkeep
+*.csv
+*.mat
+*.pdf
+*.docx
+*.xlsx
+*.xls
+*.pkl
+
+outputs/
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
