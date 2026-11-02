@@ -1,27 +1,36 @@
 """
-test_for_model.py
-=================
+model_evaluation.py
+===================
 
 Base script for evaluating all regression methods in the same way so they
 can be compared fairly.
 
-Project: FSIQ-from-ECG — regression of Full-Scale IQ (WPPSI-III) from
-neonatal ECG / HRV features (AuBE cohort, CHU Saint-Étienne).
+Project: FSIQ-from-ECG — regression of WPPSI-III IQ scores from neonatal
+ECG / HRV features (AuBE cohort, CHU Saint-Étienne).
 Research only, not a diagnostic tool.
+
+Data loading & preprocessing follow `Group A/dataset.md` (§5.2, §7):
+
+1. HRV files: skip row 2 (units row) → skiprows=[1]
+2. WPPSI-III: header on row 2, tab-separated → header=1, sep="\t"
+3. Fix comma decimal separator in WPPSI-III ("," -> ".")
+4. Filter both HRV files to Passage == "M0" (birth recordings only)
+5. Drop WPPSI rows missing the target IQ for the current run
+6. Merge linear + nonlinear HRV on Monogramme + DDN + Passage
+7. Merge HRV + WPPSI on Monogramme + DDN
+8. Drop fully-empty feature columns
+9. Impute remaining NaN with column mean
+10. Standardize features (StandardScaler, mean 0, SD 1) — fit on train only
+11. Evaluate with MAE and R² (dataset.md §9)
 
 Usage
 -----
-    python test_for_model.py
+    python model_evaluation.py
 
-Each regression method should register a ``build_model()`` callable in the
-``METHOD_REGISTRY`` below. The script will then:
-
-1. Load the data from ``data/``
-2. Build a consistent preprocessing + model pipeline for each method
-3. Evaluate on the same train / test split
-4. Report RMSE, MAE, R² and MAPE for every method
-5. Save a comparison table to ``results/model_comparison.csv``
-
+Each regression method registers a ``build_model()`` callable in
+``METHOD_REGISTRY``. The script wraps every regressor in the same
+preprocessing and evaluates on the same train / test split for each
+target IQ.
 """
 
 from __future__ import annotations
@@ -32,35 +41,60 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     mean_absolute_error,
-    mean_absolute_percentage_error,
     mean_squared_error,
     r2_score,
 )
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import StandardScaler
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Configuration (per Group A/dataset.md)
 # ---------------------------------------------------------------------------
 
 RANDOM_STATE = 42
 TEST_SIZE = 0.20
 
-# Target column name — update to match your WPPSI-III results file.
-TARGET_COLUMN = "FSIQ"  # <-- TODO: set the actual target column name
+# ---------------------------------------------------------------------------
+# Target IQ variables to try (dataset.md §3)
+# ---------------------------------------------------------------------------
+#
+# WPPSI-III columns available:
+#   QIT  — Full-Scale IQ (primary target)
+#   QIV  — Verbal IQ
+#   QIP  — Performance IQ
+#   COM, INF, DIM, CUB, AOB — subtest scores
+#   NCL  — Percentile rank
+#
+# Edit TARGET_COLUMNS to the IQs you want to compare. The script will run
+# every registered method once per target.
+#
+TARGET_COLUMNS: list[str] = ["QIT", "QIV", "QIP"]
 
-# ID / non-feature columns to drop from X.
-DROP_COLUMNS: list[str] = []  # <-- TODO: e.g. ["subject_id", "date"]
+# Identifier / metadata columns that are NOT features (dataset.md §1–§3).
+ID_COLS: list[str] = [
+    "Numéro",
+    "Monogramme",
+    "DDN",
+    "Sexe",
+    "Passage",
+    "Date",
+    "Recorder",
+]
 
-# Directory where data files live.
+# Merge keys (dataset.md §4).
+HRV_MERGE_KEYS = ["Monogramme", "DDN", "Passage"]
+WPPSI_MERGE_KEYS = ["Monogramme", "DDN"]
+
+# Data directory (sibling of this script).
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
-# Directory where comparison results will be written.
+LINEAR_PATH = DATA_DIR / "HRV_Lineaire_Full.csv"
+NONLINEAR_PATH = DATA_DIR / "HRV_NonLineaire_Full.csv"
+WPPSI_PATH = DATA_DIR / "Résultats WPPSI III.csv"
+
+# Results directory.
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,29 +102,47 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 # Method registry
 # ---------------------------------------------------------------------------
 #
-# Each entry maps a human-readable method name to a factory that returns an
-# unfitted scikit-learn regressor.  The test harness wraps every regressor in
-# the same preprocessing pipeline so all methods are evaluated identically.
+# Each entry maps a method name to a factory returning an unfitted
+# scikit-learn regressor. All methods are evaluated on identical
+# preprocessed data and the same train / test split.
 #
 # Example:
 #
+#     from sklearn.linear_model import Ridge, ElasticNet
 #     from sklearn.ensemble import RandomForestRegressor
 #
-#     def build_random_forest() -> RandomForestRegressor:
-#         return RandomForestRegressor(n_estimators=300, random_state=RANDOM_STATE)
+#     def build_ridge() -> Ridge:
+#         return Ridge(alpha=1.0, random_state=RANDOM_STATE)
 #
-#     METHOD_REGISTRY["Random Forest"] = build_random_forest
+#     METHOD_REGISTRY["Ridge"] = build_ridge
 #
 # ---------------------------------------------------------------------------
 
 METHOD_REGISTRY: dict[str, Callable[[], object]] = {}
 
 # TODO: Register your group's regression methods here.
+# Suggested for small n / high p (~189 samples, ~100 features):
+#   - Ridge, Lasso, ElasticNet, BayesianRidge (regularized linear)
+#   - RandomForestRegressor, GradientBoostingRegressor (with depth limits)
+#
 # Example entries (uncomment and adapt):
 
+# from sklearn.linear_model import Ridge, ElasticNet, BayesianRidge
 # from sklearn.ensemble import RandomForestRegressor
-# from sklearn.linear_model import ElasticNet, BayesianRidge
-# from sklearn.gaussian_process import GaussianProcessRegressor
+
+
+# def build_ridge() -> Ridge:
+#     return Ridge(alpha=1.0, random_state=RANDOM_STATE)
+
+
+# def build_elastic_net() -> ElasticNet:
+#     return ElasticNet(
+#         alpha=0.1, l1_ratio=0.5, random_state=RANDOM_STATE, max_iter=10000
+#     )
+
+
+# def build_bayesian_ridge() -> BayesianRidge:
+#     return BayesianRidge()
 
 
 # def build_random_forest() -> RandomForestRegressor:
@@ -103,99 +155,119 @@ METHOD_REGISTRY: dict[str, Callable[[], object]] = {}
 #     )
 
 
-# def build_elastic_net() -> ElasticNet:
-#     return ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=RANDOM_STATE, max_iter=10000)
-
-
-# def build_bayesian_ridge() -> BayesianRidge:
-#     return BayesianRidge()
-
-
-# def build_gaussian_process() -> GaussianProcessRegressor:
-#     return GaussianProcessRegressor(
-#         kernel=None,
-#         alpha=1e-2,
-#         normalize_y=True,
-#         random_state=RANDOM_STATE,
-#     )
-
-
-# METHOD_REGISTRY["Random Forest"] = build_random_forest
+# METHOD_REGISTRY["Ridge"] = build_ridge
 # METHOD_REGISTRY["Elastic Net"] = build_elastic_net
 # METHOD_REGISTRY["Bayesian Ridge"] = build_bayesian_ridge
-# METHOD_REGISTRY["Gaussian Process"] = build_gaussian_process
+# METHOD_REGISTRY["Random Forest"] = build_random_forest
 
 
 # ---------------------------------------------------------------------------
-# Data loading
+# Data loading (dataset.md §7, steps 1–8)
 # ---------------------------------------------------------------------------
 
 
 def load_data() -> pd.DataFrame:
-    """Load and merge the raw data files from ``data/``.
+    """Load and merge the three CSVs following dataset.md.
 
-    The exact merge keys depend on the file schemas — update this function to
-    match your HRV and WPPSI-III CSVs.  Do **not** commit data files; they
-    contain children's health information.
+    Returns the merged DataFrame (HRV linear + nonlinear + WPPSI) filtered to
+    M0 passages, with fully-empty columns dropped.  Target-specific NA rows
+    are dropped later in ``preprocess()`` per target column.
     """
-    raise NotImplementedError(
-        "Implement load_data() to read and merge the files in data/ "
-        "(HRV_Lineaire_Full.csv, HRV_NonLineaire_Full.csv, Résultats WPPSI III.csv)."
+    # --- Step 1: linear HRV, skip units row (row 2) -----------------------
+    df_linear = pd.read_csv(LINEAR_PATH, skiprows=[1])
+
+    # --- Step 2: nonlinear HRV, skip units row (row 2) --------------------
+    df_nonlinear = pd.read_csv(NONLINEAR_PATH, skiprows=[1])
+
+    # --- Step 3: WPPSI-III, header on row 2, tab-separated ----------------
+    df_wppsi = pd.read_csv(WPPSI_PATH, header=1, sep="\t")
+
+    # --- Step 4: fix comma decimal separator in WPPSI ----------------------
+    df_wppsi = df_wppsi.replace({",": "."}, regex=True)
+    for col in df_wppsi.columns:
+        df_wppsi[col] = pd.to_numeric(df_wppsi[col], errors="ignore")
+
+    # --- Step 5: filter both HRV to Passage == "M0" -----------------------
+    df_linear_m0 = df_linear[df_linear["Passage"] == "M0"].copy()
+    df_nonlinear_m0 = df_nonlinear[df_nonlinear["Passage"] == "M0"].copy()
+
+    # --- Steps 6–8: merges ------------------------------------------------
+    # linear + nonlinear on Monogramme + DDN + Passage
+    df_hrv = df_linear_m0.merge(
+        df_nonlinear_m0,
+        on=HRV_MERGE_KEYS,
+        how="inner",
+        suffixes=("_lin", "_nonlin"),
     )
+
+    # HRV + WPPSI on Monogramme + DDN (keep all WPPSI IQ columns)
+    df = df_hrv.merge(df_wppsi, on=WPPSI_MERGE_KEYS, how="inner")
+
+    # --- Step 9: drop fully-empty feature columns --------------------------
+    df = df.dropna(axis=1, how="all")
+
+    return df
 
 
 # ---------------------------------------------------------------------------
-# Preprocessing
+# Preprocessing (dataset.md §5.2, steps 9–10)
 # ---------------------------------------------------------------------------
 
 
-def build_preprocessor(X: pd.DataFrame) -> ColumnTransformer:
-    """Build a column-wise preprocessor: impute + scale numeric, impute + one-hot categorical."""
-    numeric_features = X.select_dtypes(include=np.number).columns.tolist()
-    categorical_features = X.select_dtypes(exclude=np.number).columns.tolist()
+def preprocess(df: pd.DataFrame, target_column: str):
+    """Split into X/y for a given target, drop rows missing that target,
+    impute NaN with column mean, train/test split, and standardize
+    features (fit on train only).
 
-    numeric_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
+    Returns
+    -------
+    X_train_scaled, X_test_scaled, y_train, y_test, feature_cols
+    """
+    id_cols = [c for c in ID_COLS if c in df.columns]
+    feature_cols = [c for c in df.columns if c not in id_cols + TARGET_COLUMNS]
+
+    # Work on a copy and keep only rows with a valid target value.
+    df_t = df.dropna(subset=[target_column]).copy()
+
+    X = df_t[feature_cols].copy()
+    y = df_t[target_column].copy()
+
+    # --- Step 10a: impute remaining NaN with column mean -------------------
+    X = X.fillna(X.mean())
+
+    # --- Train / test split (shared across all methods for this target) ---
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
     )
 
-    categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ]
+    # --- Step 10b: StandardScaler fit on train only ------------------------
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    X_train_scaled = pd.DataFrame(
+        X_train_scaled, columns=feature_cols, index=X_train.index
+    )
+    X_test_scaled = pd.DataFrame(
+        X_test_scaled, columns=feature_cols, index=X_test.index
     )
 
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
-        ],
-        remainder="drop",
-        verbose_feature_names_out=False,
-    )
-
-    return preprocessor
+    return X_train_scaled, X_test_scaled, y_train, y_test, feature_cols
 
 
 # ---------------------------------------------------------------------------
-# Metrics
+# Metrics (dataset.md §9)
 # ---------------------------------------------------------------------------
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
-    """Return a dictionary of standard regression metrics."""
-    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+    """Return MAE, R² and RMSE. Per dataset.md §9 the headline metrics are
+    MAE and R² (R² > 0 → better than predicting the mean)."""
     mae = float(mean_absolute_error(y_true, y_pred))
     r2 = float(r2_score(y_true, y_pred))
-    try:
-        mape = float(mean_absolute_percentage_error(y_true, y_pred))
-    except Exception:  # division by zero when y_true contains 0
-        mape = float("nan")
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
 
-    return {"RMSE": rmse, "MAE": mae, "R2": r2, "MAPE": mape}
+    return {"MAE": mae, "R2": r2, "RMSE": rmse}
 
 
 # ---------------------------------------------------------------------------
@@ -211,18 +283,10 @@ def evaluate_method(
     y_train: pd.Series,
     y_test: pd.Series,
 ) -> dict[str, float]:
-    """Fit one method and return its test-set metrics."""
-    preprocessor = build_preprocessor(X_train)
-
-    pipeline = Pipeline(
-        steps=[
-            ("preprocessor", preprocessor),
-            ("regressor", build_model()),
-        ]
-    )
-
-    pipeline.fit(X_train, y_train)
-    y_pred = pipeline.predict(X_test)
+    """Fit one method on scaled training data and return test-set metrics."""
+    model = build_model()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
 
     metrics = compute_metrics(y_test.values, y_pred)
     metrics["method"] = name
@@ -231,57 +295,69 @@ def evaluate_method(
 
 def main() -> None:
     if not METHOD_REGISTRY:
-        print("No methods registered in METHOD_REGISTRY. "
-              "Add your regressors to test_for_model.py before running.")
+        print(
+            "No methods registered in METHOD_REGISTRY. "
+            "Add your regressors to model_evaluation.py before running."
+        )
         return
 
-    print("Loading data ...")
+    # Validate that all requested targets exist after merge.
+    print("Loading and merging data (per Group A/dataset.md) ...")
     df = load_data()
 
-    if TARGET_COLUMN not in df.columns:
+    missing = [c for c in TARGET_COLUMNS if c not in df.columns]
+    if missing:
         raise ValueError(
-            f"Target column '{TARGET_COLUMN}' not found in data. "
-            f"Available columns: {list(df.columns)}"
+            f"Target column(s) {missing} not found in merged data. "
+            f"Available WPPSI columns: {[c for c in df.columns if c not in ID_COLS]}"
         )
 
-    # Split into features and target.
-    feature_cols = [c for c in df.columns if c not in DROP_COLUMNS + [TARGET_COLUMN]]
-    X = df[feature_cols]
-    y = df[TARGET_COLUMN]
+    print(f"Merged dataset: {df.shape[0]} samples × {df.shape[1]} columns")
+    print(f"Targets to evaluate: {TARGET_COLUMNS}")
 
-    # Single shared train / test split so every method is evaluated identically.
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE
-    )
+    all_results: list[dict] = []
 
-    print(
-        f"Data: {X.shape[0]} samples, {X.shape[1]} features | "
-        f"Train: {X_train.shape[0]} | Test: {X_test.shape[0]}"
-    )
+    for target in TARGET_COLUMNS:
+        print(f"\n{'='*60}")
+        print(f"TARGET: {target}")
+        print(f"{'='*60}")
 
-    results: list[dict[str, float]] = []
-    for name, build_model in METHOD_REGISTRY.items():
-        print(f"\nEvaluating: {name}")
-        metrics = evaluate_method(name, build_model, X_train, X_test, y_train, y_test)
-        results.append(metrics)
+        # Preprocess once per target: impute mean, split, standardize (fit on train).
+        X_train, X_test, y_train, y_test, feature_cols = preprocess(df, target)
+
         print(
-            f"  RMSE={metrics['RMSE']:.4f}  "
-            f"MAE={metrics['MAE']:.4f}  "
-            f"R2={metrics['R2']:.4f}  "
-            f"MAPE={metrics['MAPE']:.4f}"
+            f"Features: {len(feature_cols)} | "
+            f"Train: {X_train.shape[0]} | Test: {X_test.shape[0]} | "
+            f"Target mean={y_train.mean():.2f}, SD={y_train.std():.2f}"
         )
 
-    # --- comparison table -------------------------------------------------
-    results_df = pd.DataFrame(results)
-    cols = ["method", "RMSE", "MAE", "R2", "MAPE"]
-    results_df = results_df[cols].sort_values("RMSE").reset_index(drop=True)
+        for name, build_model in METHOD_REGISTRY.items():
+            print(f"\nEvaluating: {name}")
+            metrics = evaluate_method(
+                name, build_model, X_train, X_test, y_train, y_test
+            )
+            metrics["target"] = target
+            all_results.append(metrics)
+            print(
+                f"  MAE={metrics['MAE']:.4f}  "
+                f"R²={metrics['R2']:.4f}  "
+                f"RMSE={metrics['RMSE']:.4f}"
+            )
+
+    # --- Comparison table -------------------------------------------------
+    results_df = pd.DataFrame(all_results)
+    if "R2" in results_df.columns:
+        results_df = results_df.rename(columns={"R2": "R²"})
+
+    cols = ["target", "method", "MAE", "R²", "RMSE"]
+    results_df = results_df[cols].sort_values(["target", "MAE"]).reset_index(drop=True)
 
     print("\n" + "=" * 60)
-    print("MODEL COMPARISON (sorted by RMSE, lower is better)")
+    print("MODEL COMPARISON (sorted by target, then MAE — lower is better)")
     print("=" * 60)
     print(results_df.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
 
-    # --- save results ------------------------------------------------------
+    # --- Save results ------------------------------------------------------
     out_path = RESULTS_DIR / "model_comparison.csv"
     results_df.to_csv(out_path, index=False)
     print(f"\nComparison table saved to: {out_path}")
