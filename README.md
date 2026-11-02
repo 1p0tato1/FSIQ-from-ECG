@@ -18,3 +18,28 @@ Put your data files in `data/` locally. They are children's health data and this
 
 ## Git workflow
 Work on your own branch (e.g. `groupA/firstname-topic`), open a PR to `main`. No direct push to `main`.
+
+## Possible Regression Model Methods
+1. Random forest
+2. Elastic Net (tune α ∈ [0,1], λ)
+3. Bayesian Ridge or Gaussian Process
+
+## Project Structure 
+The models are in each folder, the methods are still to be decided. In the root of the project there is a py file that evaluates all the methods the same way in order to compare them. 
+```
+.
+├── data
+│   ├── HRV_Lineaire_Full.csv
+│   ├── HRV_NonLineaire_Full.csv
+│   └── Résultats WPPSI III.csv
+├── Group A
+│   ├── Regression Method 1
+│   │   └── method1.ipynb
+│   └── Regression Method 2
+│       └── method2.ipynb
+├── Group B
+│   └── groupb.ipynb
+├── README.md
+├── requirements.txt
+└── model_evaluation.py
+```
