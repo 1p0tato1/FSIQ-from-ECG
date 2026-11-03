@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 1) Removes from the WPPSI results file the rows with empty cells, and removes
    from the two HRV files (linear and non-linear) the rows of the subjects
@@ -16,9 +15,9 @@ used (if it does not match, the row is NOT removed); differences in the
 initials are only reported.
 
 Usage:
-    python pulisci_righe.py                      # looks for the files in the script's folder
-    python pulisci_righe.py --folder /path       # different folder
-    python pulisci_righe.py --mode all_empty     # remove only completely empty rows
+    python clean_data.py                      # looks for the files in the script's folder
+    python clean_data.py --folder /path       # different folder
+    python clean_data.py --mode all_empty     # remove only completely empty rows
 """
 import argparse
 import sys
@@ -27,8 +26,8 @@ from pathlib import Path
 import pandas as pd
 
 # ----------------------------- CONFIGURATION ------------------------------
-RESULTS_FILE = "Résultats_WPPSI_III.csv"
-HRV_FILES = ["HRV_Lineaire_Full.csv", "HRV_NonLineaire_Full.csv"]
+RESULTS_FILE = "../data/Résultats WPPSI III.csv"
+HRV_FILES = ["../data/HRV_Lineaire_Full.csv", "../data/HRV_NonLineaire_Full.csv"]
 SEPARATOR = "\t"
 ENCODING = "utf-8"
 RESULTS_HEADER_ROWS = 2   # the WPPSI file has 2 header rows
@@ -61,8 +60,8 @@ def main():
                          "all_empty: remove it only if ALL data cells are empty")
     args = ap.parse_args()
     folder = Path(args.folder)
-    out_dir = folder / "puliti"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = (folder / "../data/cleaned").resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # --- 1) Results file ----------------------------------------------------
     results_header, results = read(folder / RESULTS_FILE, RESULTS_HEADER_ROWS)
@@ -123,7 +122,7 @@ def main():
         remaining = remaining[is_m0]
         present_in_hrv.append(set(zip(remaining[COL_NUMBER].str.strip(),
                                       remaining[COL_DOB].str.strip())))
-        save(pd.concat([header, coding]), remaining, out_dir / file_name)
+        save(pd.concat([header, coding]), remaining, out_dir / Path(file_name).name)
         print(f"{file_name}: {len(data)} rows -> {len(remaining)} "
               f"({mask.sum()} removed for the WPPSI cleaning, "
               f"{n_not_m0} removed because Passage != {PASSAGE_VALUE})")
@@ -136,7 +135,7 @@ def main():
         print(f"{RESULTS_FILE}: subjects present only here (removed):")
         print(kept[wppsi_only].iloc[:, :3].to_string(header=False))
     kept = kept[~wppsi_only]
-    save(results_header, kept, out_dir / RESULTS_FILE)
+    save(results_header, kept, out_dir / Path(RESULTS_FILE).name)
     print(f"{RESULTS_FILE}: {len(results)} rows -> {len(kept)}")
 
     # warning if the two HRV files do not contain the same subjects
