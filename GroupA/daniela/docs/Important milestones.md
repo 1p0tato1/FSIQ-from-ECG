@@ -48,3 +48,10 @@ Both files share the same cleaning steps (WPPSI empty-row removal, subject match
 On [[data_merge.py]] data is going to be merged in one table easy to use when creating the machine learning methods.
 
 Detailed info in [[Data Merge]].
+
+---
+# Clean Features
+
+On [[data_feature.py]] the features get a basic clean.
+
+Detailed info in [[Feature Cleaning]].

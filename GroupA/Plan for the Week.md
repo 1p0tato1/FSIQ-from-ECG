@@ -18,9 +18,9 @@ Set up repository, development environment, git workflow, and start data inspect
 ### Steps
 - [x] Filter both HRV files to `Passage == "M0"` (birth recordings only)
 - [x] Drop WPPSI rows missing target IQ (QIT, QIV, QIP, NCL)
-- [ ] Merge linear + nonlinear HRV on `Monogramme` + `DDN` + `Passage`
-- [ ] Merge HRV + WPPSI on `Monogramme` + `DDN`
-- [ ] Drop fully-empty feature columns; impute remaining NaN with column mean
+- [x] Merge linear + nonlinear HRV on `Monogramme` + `DDN` + `Passage`
+- [x] Merge HRV + WPPSI on `Monogramme` + `DDN`
+- [x] Drop fully-empty feature columns; impute remaining NaN with column mean
 - [ ] **Feature selection / engineering:**
     - [ ] Correlation analysis & removal of highly correlated features (|r| > 0.95)
     - [ ] Variance threshold (remove near-zero variance)

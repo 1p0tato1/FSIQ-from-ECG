@@ -3,7 +3,9 @@ tags:
   - documentation
 ---
 ---
-Use:
+## Usage
+
+Run from the **repo root**:
 ```shell
 python GroupA/daniela/data_preprocessing.py --folder data
 ```
