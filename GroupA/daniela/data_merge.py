@@ -1,3 +1,17 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Merge cleaned WPPSI and HRV files into a single dataset.
+
+Usage (from repo root):
+    python GroupA/daniela/data_merge.py --source clean_data_shifted
+    python GroupA/daniela/data_merge.py --source clean_data_m_shifted --how outer
+
+Reads the three cleaned CSVs from data/<source>/ and saves the merged table
+into the same directory as merged_dataset.csv.
+
+Rows are matched on subject NUMBER (column 0), NOT on initials.
+"""
 import argparse
 import sys
 from pathlib import Path
@@ -13,13 +27,15 @@ ENCODING = "utf-8"
 
 WPPSI_HEADER_ROWS = 2   # WPPSI has 2 header rows
 HRV_HEADER_ROWS = 1     # HRV has 1 header row (+ 1 coding row kept below it)
-COL_NUMBER = 0          # subject number = merge key
+COL_NUMBER = 0          # subject number = merge key (by position)
 COL_NAME = 1            # initials (kept for reference, not used for matching)
 COL_DOB = 2             # date of birth (consistency check)
+KEY_COLUMN_NAME = "Numéro"   # standard name for the merge key column
 
 # Merge strategy: "inner" = keep only subjects in ALL three files;
 # "outer" = keep all subjects, fill missing with empty
 MERGE_HOW = "inner"
+OUT_FILENAME = "merged_dataset.csv"
 # --------------------------------------------------------------------------
 
 
@@ -41,7 +57,7 @@ def save_with_headers(headers, data, path):
 
 def prepare_dataframe(headers, data, source_tag, skip_coding_row=False):
     """
-    Convert raw headers+data into a clean DataFrame indexed by subject number.
+    Convert raw headers+data into a clean DataFrame.
     - source_tag: suffix added to non-key columns (e.g. '_WPPSI')
     - skip_coding_row: for HRV files, drop the first data row (coding row)
     """
@@ -69,10 +85,13 @@ def prepare_dataframe(headers, data, source_tag, skip_coding_row=False):
 
     df.columns = names
 
+    # Standardize the key column name so all sources merge on the same column
+    df = df.rename(columns={df.columns[COL_NUMBER]: KEY_COLUMN_NAME})
+
     # Add suffix to non-key columns to avoid collisions during merge
     new_cols = {}
     for col in df.columns:
-        if col == df.columns[COL_NUMBER]:
+        if col == KEY_COLUMN_NAME:
             new_cols[col] = col  # keep key column name unchanged
         else:
             new_cols[col] = f"{col}{source_tag}"
@@ -82,36 +101,46 @@ def prepare_dataframe(headers, data, source_tag, skip_coding_row=False):
 
 
 def main():
+    # Default --folder to the repo root (this script lives in GroupA/daniela/)
+    default_folder = str(Path(__file__).resolve().parent.parent.parent)
+
     ap = argparse.ArgumentParser()
-    ap.add_argument("--folder", default=str(Path(__file__).resolve().parent))
+    ap.add_argument("--folder", default=default_folder,
+                    help="Project root folder containing the data/ directory")
+    ap.add_argument("--source", choices=["clean_data_shifted", "clean_data_m_shifted"],
+                    required=True,
+                    help="Which cleaned-data subdirectory under data/ to read from and save to")
     ap.add_argument("--how", choices=["inner", "outer"], default=MERGE_HOW,
                     help='inner: subjects present in ALL files; '
                          'outer: all subjects, missing cells left empty')
     args = ap.parse_args()
 
     folder = Path(args.folder)
-    merged_table = folder / "merged_table"
-    out_dir = folder / "merged"
+    src_dir = folder / "data" / args.source
+    if not src_dir.is_dir():
+        sys.exit(f"Source directory not found: {src_dir}")
+
+    out_dir = src_dir  # save merged table in the same directory
     out_dir.mkdir(exist_ok=True)
 
     # --- Read WPPSI ---
-    w_header, w_data = read_raw(merged_table / WPPSI_FILE, WPPSI_HEADER_ROWS)
-    wppsI = prepare_dataframe(w_header, w_data, source_tag="_WPPSI")
+    w_header, w_data = read_raw(src_dir / WPPSI_FILE, WPPSI_HEADER_ROWS)
+    wppi = prepare_dataframe(w_header, w_data, source_tag="_WPPSI")
 
     # --- Read Linear HRV ---
-    l_header, l_data = read_raw(merged_table / LINEAR_FILE, HRV_HEADER_ROWS)
+    l_header, l_data = read_raw(src_dir / LINEAR_FILE, HRV_HEADER_ROWS)
     linear = prepare_dataframe(l_header, l_data, source_tag="_Linear",
                                skip_coding_row=True)
 
     # --- Read Non-linear HRV ---
-    n_header, n_data = read_raw(merged_table / NONLINEAR_FILE, HRV_HEADER_ROWS)
+    n_header, n_data = read_raw(src_dir / NONLINEAR_FILE, HRV_HEADER_ROWS)
     nonlinear = prepare_dataframe(n_header, n_data, source_tag="_NonLinear",
                                   skip_coding_row=True)
 
     # --- Merge on subject number ---
-    key_col = wppsI.columns[COL_NUMBER]
+    key_col = KEY_COLUMN_NAME
 
-    merged = wppsI.merge(linear, on=key_col, how=args.how, suffixes=("", ""))
+    merged = wppi.merge(linear, on=key_col, how=args.how, suffixes=("", ""))
     merged = merged.merge(nonlinear, on=key_col, how=args.how, suffixes=("", ""))
 
     # --- Consistency check: DOB across sources ---
@@ -129,14 +158,13 @@ def main():
             print("DOB consistent across all sources.")
 
     # --- Save ---
-    out_path = out_dir / OUT_FILE
-    # Reconstruct headers for output: one row with column names
+    out_path = out_dir / OUT_FILENAME
     header_out = pd.DataFrame([merged.columns], columns=merged.columns)
     save_with_headers(header_out, merged, out_path)
 
     print(f"\nMerged {len(merged)} subjects -> {out_path}")
     print(f"Columns: {len(merged.columns)}")
-    print(f"Files saved in: {out_dir}")
+    print(f"Saved in: {out_dir}")
 
 
 if __name__ == "__main__":
