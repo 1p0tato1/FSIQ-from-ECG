@@ -3,9 +3,13 @@ tags:
   - documentation
 ---
 ---
+Use:
+```shell
+python GroupA/daniela/data_preprocessing.py --folder data
+```
 # Data Preprocessing and automatic shifting
 
-Documents [[data_preprocessing.py]] — the cleaning pipeline that repairs the left-shifted HRV columns automatically. Its output lives in `data/clean_data_shifted/`.
+Documents [[data_preprocessing.py]], the cleaning pipeline that repairs the left-shifted HRV columns automatically. Its output lives in `data/clean_data_shifted/`.
 
 ## Purpose
 Clean the WPPSI results file and the two HRV files (linear and non-linear) so that only complete, consistent subjects with an "M0" visit remain, AND repair the rows whose values are shifted to the left (the last cells are empty because the values moved left by SHIFT columns).

@@ -3,6 +3,10 @@ tags:
   - documentation
 ---
 ---
+Use:
+```shell
+python GroupA/daniela/data_preprocessing.py --folder data
+```
 # Data Preprocessing and manual shifting
 
 Documents [[data_preprocessing_m.py]] — the cleaning pipeline that does NOT repair the left-shifted HRV columns. Its output lives in `data/clean_data_m_shifted/`; the column shift was repaired manually afterwards (hence "m_shifted").
