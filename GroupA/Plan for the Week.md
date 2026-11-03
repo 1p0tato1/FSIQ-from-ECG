@@ -16,8 +16,8 @@ Set up repository, development environment, git workflow, and start data inspect
 **Finish data preprocessing, merging, and feature engineering**, produce final modeling dataset.
 
 ### Steps
-- [ ] Filter both HRV files to `Passage == "M0"` (birth recordings only)
-- [ ] Drop WPPSI rows missing target IQ (QIT, QIV, QIP, NCL)
+- [x] Filter both HRV files to `Passage == "M0"` (birth recordings only)
+- [x] Drop WPPSI rows missing target IQ (QIT, QIV, QIP, NCL)
 - [ ] Merge linear + nonlinear HRV on `Monogramme` + `DDN` + `Passage`
 - [ ] Merge HRV + WPPSI on `Monogramme` + `DDN`
 - [ ] Drop fully-empty feature columns; impute remaining NaN with column mean
