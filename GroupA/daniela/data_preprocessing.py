@@ -121,7 +121,7 @@ def main():
                          "empty cell; all_empty: remove it only if ALL data cells are empty")
     args = ap.parse_args()
     folder = Path(args.folder)
-    out_dir = folder / "puliti"
+    out_dir = folder / "clean_data_shifted"
     out_dir.mkdir(exist_ok=True)
 
     # --- 1) WPPSI results file: empty rows ----------------------------------
