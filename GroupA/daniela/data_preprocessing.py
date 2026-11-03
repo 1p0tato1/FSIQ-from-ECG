@@ -19,9 +19,9 @@ the date of birth is used (if it does not match, the row is NOT removed);
 differences in the initials are only reported.
 
 Usage:
-    python pulisci_righe.py                      # looks for the files in the script's folder
-    python pulisci_righe.py --folder /path       # different folder
-    python pulisci_righe.py --mode all_empty     # WPPSI: remove only completely empty rows
+    python data_preprocessing.py                      # looks for the files in the script's folder
+    python data_preprocessing.py --folder /path       # different folder
+    python data_preprocessing.py --mode all_empty     # WPPSI: remove only completely empty rows
 """
 import argparse
 import sys
