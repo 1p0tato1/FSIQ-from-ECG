@@ -5,25 +5,26 @@
 **Aucun modèle ne fait mieux que prédire le score moyen, sur aucune cible.** La HRV retrouve pourtant bien la prématurité (AUC 0.79) : les données et la méthode savent voir un lien quand il existe.
 
 ## Données et méthode
-- 189 enfants de la cohorte AuBE (enregistrement à la naissance, scores WPPSI-III complets) ; 25 indices HRV linéaires (périodes : 24h, Day, Night), 45 non linéaires (périodes : 24h, Day, Night, autre), 6 covariables cliniques.
+- 189 enfants de la cohorte AuBE (enregistrement à la naissance, scores WPPSI-III complets) ; 25 indices HRV linéaires, 45 non linéaires, 6 covariables cliniques.
 - Modèles : Elastic Net, LightGBM, Random Forest, SVR, XGBoost ; réduction des variables dans chaque pli ; évaluation sur les plis communs de l'équipe (10 × 5, `evaluate_model.py`).
 
 ## Régression (meilleur modèle par cible)
 | Cible | Modèle | MAE ± écart-type | R² | MAE de la moyenne | Gain vs moyenne [IC 95 %] |
 |---|---|---|---|---|---|
 | QIT | Elastic Net · toutes · Clinique seul | 10.33 ± 0.69 | -0.007 | 10.39 | +0.06 [-0.12 ; 0.23] (non démontré) |
-| QIV | Elastic Net · toutes · Clinique seul | 11.68 ± 1.21 | -0.010 | 11.66 | -0.02 [-0.22 ; 0.16] (non démontré) |
-| QIP | Elastic Net · toutes · Clinique seul | 9.75 ± 0.94 | -0.017 | 9.75 | +0.00 [-0.16 ; 0.16] (non démontré) |
+| QIV | Elastic Net · toutes · Clinique seul | 11.68 ± 1.20 | -0.010 | 11.66 | -0.02 [-0.22 ; 0.16] (non démontré) |
+| QIP | Elastic Net · toutes · Clinique seul | 9.75 ± 0.94 | -0.017 | 9.75 | +0.00 [-0.16 ; 0.17] (non démontré) |
 | NCL | Elastic Net · toutes · Clinique seul | 11.64 ± 1.23 | -0.021 | 11.62 | -0.01 [-0.15 ; 0.13] (non démontré) |
 
 - Ajouter la HRV au modèle clinique (Elastic Net, QIT) : la MAE passe de 10.33 à 10.47 (moins bien).
 - Signal dans les variables : la plus forte corrélation avec le QIT vaut 0.16, contre 0.17 en moyenne par hasard (jusqu'à 0.21) : rien ne dépasse le hasard, pas de lien à apprendre.
 - Limite de détection (simulation) : avec ces enfants, la méthode voit un lien dès qu'il explique environ 20% de la variance du QI ; si la HRV en explique une part, elle est plus petite.
+- Borne (indices choisis à l'avance : RMSSD (TD24h), HF (FT24h), SDNN (TD24h), 1re composante HRV) : aucun lien démontré ; aucun n'explique plus de 6% de la variance du QIT (6% au-delà des covariables cliniques), intervalles simultanés à 95 % ; un lien de 6% aurait été détecté 8 fois sur 10.
 - Intervalle de prédiction à 90% (prédiction conforme) : ± 21.3 points, contre ± 20.9 autour du QIT moyen.
 
 ## Contrôle positif, classification, hypothèses
 - Contrôle positif : HRV seule → prématurité, AUC 0.79 [0.67 ; 0.93].
-- Classification QIT < 90 (40 enfants) : meilleure AUC 0.50 [0.40 ; 0.61] (Logistique · Clinique + HRV), exactitude équilibrée 0.51, kappa 0.01.
+- Classification QIT < 90 (40 enfants) : meilleure AUC 0.50 [0.39 ; 0.61] (Logistique · Clinique + HRV), exactitude équilibrée 0.51, kappa 0.02.
 - H1 · HRV à M0 (189 enfants) : gain -0.13 [-0.22 ; -0.04] (non soutenue).
 - H1 · HRV à M6 (176 enfants) : gain -0.07 [-0.32 ; 0.17] (non soutenue).
 - H1 · HRV à M12 (177 enfants) : gain -0.03 [-0.07 ; 0.01] (non soutenue).
