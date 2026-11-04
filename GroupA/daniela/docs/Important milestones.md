@@ -65,7 +65,6 @@ Regression Method 1 — WPPSI-III IQ from Neonatal ECG/HRV. Trains regularized r
 - **Data source:** cleaned + merged table produced by `data_preprocessing.py` / `data_merge.py` / `data_features.py` (`data/clean_data_shifted/merged_dataset_features.csv`, recommended).
 - **Target:** `Note composite_WPPSI` (configurable via `TARGET_COLUMN`; alternatives: `NS Verb._WPPSI`, `NS Perf._WPPSI`, `Rang percentile_WPPSI`).
 - **Features:** all HRV/clinical columns except ID/metadata keys and all WPPSI columns (to prevent target leakage).
-- **Research only — not a diagnostic tool.** Health data lives in `data/` and must **never** be committed or shared with AI tools.
 
 ## Preprocessing (already applied upstream)
 The merged dataset arrives pre-cleaned. Steps already applied (see this document's Data cleaning section):
@@ -127,4 +126,6 @@ Cell 7 produces Predicted vs Actual IQ and Residual plots using out-of-fold (out
 
 ---
 # Results Documentation
-1.  
+1.  [[Regularized Models + Auto shifting]]
+2. [[Regularized Models + Manual shifting]]
+3. 
