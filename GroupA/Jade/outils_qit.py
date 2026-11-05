@@ -22,7 +22,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 from lightgbm import LGBMRegressor
 from scipy.stats import norm, rankdata
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone, is_classifier
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
@@ -41,6 +41,7 @@ from xgboost import XGBRegressor
 from evaluate_model import bootstrap, norm_id, run_cv
 
 # ===================================================================================== Réglages fixes
+# [À ADAPTER] pour d'autres fichiers : noms des colonnes (comparés sans accents, majuscules ni espaces).
 COL_ID_HRV, COL_ID_WPPSI, COL_PASSAGE = "Numéro", "N°", "Passage"
 COLS_SCORES = {e: f"Note composite | {e}" for e in ["QIV", "QIP", "QIT", "NCL"]}
 COLS_CLINIQUES = ["Sexe", "Prématuré", "SFA", "Réa à la naissance", "Pathologie neurologique",
@@ -433,8 +434,17 @@ def faire_modele(nom, n_iter):
                               scoring="neg_mean_absolute_error", random_state=0)
 
 
+def _classification(modele):
+    return modele in LOGISTIQUE if isinstance(modele, str) else is_classifier(modele)
+
+
 def faire_pipeline(colonnes, modele="Elastic Net", selection="toutes", n_iter=12):
-    """Préparation, sélection et modèle : un seul objet, ajusté en entier dans chaque pli."""
+    """Préparation, sélection et modèle : un seul objet, ajusté en entier dans chaque pli.
+    `modele` : un nom (Elastic Net, Random Forest, LightGBM, XGBoost, SVR, Logistique) ou n'importe quel modèle
+    scikit-learn déjà réglé, par exemple Ridge(alpha=10) ; il est copié neuf dans chaque pli."""
+    if not isinstance(modele, str):
+        return Pipeline([("prep", faire_preprocesseur(colonnes)), ("selection", SELECTIONS[selection]()),
+                         ("modele", clone(modele))])
     if modele in LOGISTIQUE:      # classification ; class_weight="balanced" : la classe rare compte autant
         return Pipeline([("prep", faire_preprocesseur(colonnes)),
                          ("modele", LogisticRegressionCV(Cs=10, cv=StratifiedKFold(3, shuffle=True, random_state=0),
@@ -448,13 +458,14 @@ def _un_pli(Xd, y, tr, te, modele, selection, n_iter):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         pipe = faire_pipeline(list(Xd.columns), modele, selection, n_iter).fit(Xd.loc[tr], y.loc[tr])
-        return pipe.predict_proba(Xd.loc[te])[:, 1] if modele in LOGISTIQUE else np.ravel(pipe.predict(Xd.loc[te]))
+        return pipe.predict_proba(Xd.loc[te])[:, 1] if _classification(modele) else np.ravel(pipe.predict(Xd.loc[te]))
 
 
 def predictions_croisees(Xd, y, plis, modele="Elastic Net", selection="toutes", n_iter=12, n_jobs=-1):
     """Prédictions hors pli : chaque enfant est prédit par un modèle qui ne l'a pas vu.
     y : une cible (Series) ou plusieurs (DataFrame, un modèle par cible). Renvoie, par cible, un tableau avec une
-    ligne par répétition et une colonne par enfant. modele="Logistique" : probabilité de la classe 1."""
+    ligne par répétition et une colonne par enfant. modele="Logistique" (ou un classifieur scikit-learn) :
+    probabilité de la classe 1. `modele` peut être un nom ou un modèle scikit-learn (voir faire_pipeline)."""
     Y = y.to_frame() if isinstance(y, pd.Series) else y
     taches = [(c, r, tr, te) for c in Y.columns for r, _, tr, te in plis]
     sorties = Parallel(n_jobs=n_jobs)(delayed(_un_pli)(Xd, Y[c], tr, te, modele, selection, n_iter)
@@ -520,26 +531,50 @@ def tableau_resultats(comparaison, resume_equipe, cibles):
     }).set_index(pd.MultiIndex.from_frame(t[["target", "model"]], names=[_t("cible", "target"), _t("modèle", "model")]))
 
 
+TEINTE_MIEUX = "#e3eefb"           # fond léger du côté « bon résultat » d'un seuil
+
+
+def _cote_mieux(ax, seuil=0.0, axe="x"):
+    """Teinte le côté « bon résultat » (au-delà de `seuil`) et trace le seuil ; laisse de la place de ce côté."""
+    bas, haut = ax.get_xlim() if axe == "x" else ax.get_ylim()
+    haut = max(haut, seuil + 0.3 * (haut - bas))
+    if axe == "x":
+        ax.set_xlim(bas, haut)
+        ax.axvspan(seuil, haut, color=TEINTE_MIEUX, lw=0, zorder=0)
+        ax.axvline(seuil, color="k", lw=1.2, zorder=1)
+    else:
+        ax.set_ylim(bas, haut)
+        ax.axhspan(seuil, haut, color=TEINTE_MIEUX, lw=0, zorder=0)
+        ax.axhline(seuil, color="k", lw=1.2, zorder=1)
+
+
 def graphique_gains(par_pli, cibles, fichier):
     """Gain de MAE sur la moyenne et R², par modèle et par cible (moyenne ± écart-type sur les plis)."""
     modeles = [m for m in par_pli.model.unique() if m != REFERENCE]
     t = par_pli[par_pli.model != REFERENCE].groupby(["model", "target"])[["gain", "R2"]].agg(["mean", "std"])
-    fig, axes = plt.subplots(1, 2, figsize=(13, 0.5 * len(modeles) * max(1, len(cibles) / 2) + 1.5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 0.5 * len(modeles) * max(1, len(cibles) / 2) + 2.3), sharey=True)
     hauteur = 0.8 / len(cibles)
     for j, cible in enumerate(cibles):
         g = t.xs(cible, level="target").loc[modeles]
         pos = np.arange(len(modeles)) + (j - (len(cibles) - 1) / 2) * hauteur
         for ax, mesure in zip(axes, ["gain", "R2"]):
-            ax.barh(pos, g[(mesure, "mean")], height=hauteur, xerr=g[(mesure, "std")], label=cible, capsize=2)
+            ax.barh(pos, g[(mesure, "mean")], height=hauteur, xerr=g[(mesure, "std")], label=cible, capsize=2, zorder=2)
     for ax in axes:
-        ax.axvline(0, color="k", lw=1)
+        _cote_mieux(ax)
     axes[0].set(yticks=range(len(modeles)), yticklabels=modeles,
-                xlabel=_t("gain de MAE par rapport au score moyen (points) ; à droite de 0 = mieux",
-                          "MAE gain over the mean score (points); right of 0 = better"))
+                xlabel=_t("gain de MAE par rapport au score moyen (points)", "MAE gain over the mean score (points)"))
+    axes[0].set_title(_t("Gain : bon résultat à droite de 0 (zone bleutée)", "Gain: good result right of 0 (shaded area)"),
+                      loc="left", fontsize=10)
     axes[0].invert_yaxis()
-    axes[1].set(xlabel=_t("R² ; à droite de 0 = mieux que la moyenne", "R²; right of 0 = better than the mean"))
+    axes[1].set(xlabel="R²")
+    axes[1].set_title(_t("R² : bon résultat à droite de 0 (mieux que la moyenne)",
+                         "R²: good result right of 0 (better than the mean)"), loc="left", fontsize=10)
     fig.legend(*axes[0].get_legend_handles_labels(), loc="upper center", ncol=len(cibles), frameon=False)
-    plt.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.text(0.01, 0.01, _t("Un gain n'est démontré que si son intervalle de confiance à 95 % (tableau) est entièrement "
+                            "au-dessus de 0. Barres : moyenne ± écart-type sur les plis.",
+                            "A gain is demonstrated only if its 95% confidence interval (table) is entirely above 0. "
+                            "Bars: mean ± standard deviation over the folds."), fontsize=9, color="#52514e")
+    plt.tight_layout(rect=(0, 0.04, 1, 0.94))
     fig.savefig(fichier, dpi=150)
     plt.show()
 
@@ -552,7 +587,11 @@ def graphique_predit_observe(vrai, pred, titre):
     ax.plot(bornes, bornes, "k--", lw=1, label=_t("prédiction parfaite", "perfect prediction"))
     ax.axhline(vrai.mean(), color="grey", lw=1, label=_t("QIT moyen", "mean FSIQ"))
     ax.set(xlabel=_t("QIT observé", "observed FSIQ"), ylabel=_t("QIT prédit", "predicted FSIQ"), title=titre)
-    ax.legend()
+    ax.legend(loc="upper left")
+    ax.text(0.98, 0.03, _t("Bon modèle : points le long de la diagonale\nPas de signal : bande horizontale",
+                           "Good model: points along the diagonal\nNo signal: horizontal band"),
+            transform=ax.transAxes, ha="right", va="bottom", fontsize=8.5, color="#52514e",
+            bbox={"facecolor": "white", "edgecolor": "#c3c2b7", "boxstyle": "round,pad=0.4"})
     plt.tight_layout()
     plt.show()
 
@@ -565,8 +604,8 @@ def _gain_vs_moyenne(y, P, plis):
     tirages = bootstrap(Y, {"moyenne": Bm, "modele": Pm}, 2000, 0)
     gains = tirages["moyenne"]["MAE"] - tirages["modele"]["MAE"]
     mae_m, mae_b = np.abs(Pm - Y).mean(), np.abs(Bm - Y).mean()
-    return {"enfants": len(y), "MAE moyenne": mae_b, "MAE modèle": mae_m, "gain": mae_b - mae_m,
-            "IC bas": np.percentile(gains, 2.5), "IC haut": np.percentile(gains, 97.5)}
+    return {"enfants": len(y), "MAE moyenne": float(mae_b), "MAE modèle": float(mae_m), "gain": float(mae_b - mae_m),
+            "IC bas": float(np.percentile(gains, 2.5)), "IC haut": float(np.percentile(gains, 97.5))}
 
 
 def gain_vs_moyenne(y, P, plis):
@@ -605,7 +644,14 @@ def simulation_detection(X, colonnes, cols_hrv, qit, niveaux, n_rep, k_plis, gra
     return _traduire(t)
 
 
-def graphique_simulation(simulation, reel):
+def _montrer(fig, fichier):
+    """Affiche le graphique et, si `fichier` est donné, l'enregistre (graphiques agrégés seulement)."""
+    if fichier is not None:
+        fig.savefig(fichier, dpi=150, bbox_inches="tight")
+    plt.show()
+
+
+def graphique_simulation(simulation, reel, fichier=None):
     gain, bas, haut = simulation[_k("gain")], simulation[_k("IC bas")], simulation[_k("IC haut")]
     fig, ax = plt.subplots(figsize=(7.5, 3.8))
     ax.errorbar(simulation.index * 100, gain, yerr=[gain - bas, haut - gain], fmt="o-", capsize=3,
@@ -615,14 +661,17 @@ def graphique_simulation(simulation, reel):
         ax.axhline(reel.MAE_gain_vs_baseline, color="tab:red", lw=2,
                    label=_t(f"vrai QIT : {reel.MAE_gain_vs_baseline:+.2f} point",
                             f"real FSIQ: {reel.MAE_gain_vs_baseline:+.2f} point"))
-    ax.axhline(0, color="k", lw=0.8)
+    _cote_mieux(ax, axe="y")
     ax.set(xlabel=_t("part de la variance du QI expliquée par la HRV dans le faux QI (%)",
                      "share of IQ variance explained by HRV in the fake IQ (%)"),
            ylabel=_t("gain de MAE sur la moyenne (points)", "MAE gain over the mean (points)"),
-           title=_t("À partir de quand la méthode voit-elle un lien ?", "From what strength does the method see a link?"))
+           title=_t("À partir de quand la méthode voit-elle un lien ?\n"
+                    "Lien détecté quand tout l'intervalle est au-dessus de 0 (zone bleutée)",
+                    "From what strength does the method see a link?\n"
+                    "Link detected when the whole interval is above 0 (shaded area)"))
     ax.legend(loc="upper left")
     plt.tight_layout()
-    plt.show()
+    _montrer(fig, fichier)
 
 
 # ===================================================================================== 4.5 Borne
@@ -692,7 +741,7 @@ def tableau_bornes(bornes):
     }, index=bornes.index)
 
 
-def graphique_bornes(bornes, r_detectable):
+def graphique_bornes(bornes, r_detectable, fichier=None):
     fig, ax = plt.subplots(figsize=(7.5, 0.7 * len(bornes) + 1.6))
     y = np.arange(len(bornes))[::-1]
     ax.axvspan(-r_detectable, r_detectable, color="grey", alpha=0.12,
@@ -704,13 +753,17 @@ def graphique_bornes(bornes, r_detectable):
         r = bornes[_k(f"ρ{suffixe}")]
         ax.errorbar(r, y + decalage, xerr=[r - bornes[_k(f"IC bas{suffixe}")], bornes[_k(f"IC haut{suffixe}")] - r],
                     fmt="o", capsize=3, color=couleur, label=nom)
-    ax.axvline(0, color="k", lw=0.8)
+    ax.axvline(0, color="k", lw=1.2)
     ax.set(yticks=y, yticklabels=bornes.index,
            xlabel=_t("corrélation de Spearman avec le QIT [IC simultanés à 95 %]",
-                     "Spearman correlation with FSIQ [simultaneous 95% CI]"))
+                     "Spearman correlation with FSIQ [simultaneous 95% CI]"),
+           title=_t("Lien démontré si l'intervalle ne touche pas la ligne 0\n"
+                    "Sinon, la HRV explique au plus (borne de l'intervalle)² de la variance",
+                    "Link demonstrated if the interval does not touch the 0 line\n"
+                    "Otherwise, HRV explains at most (interval bound)² of the variance"))
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=1, fontsize=8, frameon=False)
     plt.tight_layout()
-    plt.show()
+    _montrer(fig, fichier)
 
 
 # ===================================================================================== 5-6. Classification
@@ -734,17 +787,18 @@ def resume_classification(y_bin, P):
 
 
 # ===================================================================================== 7. Hypothèses
-def graphique_hypotheses(hypotheses):
+def graphique_hypotheses(hypotheses, fichier=None):
     gain, bas, haut = hypotheses[_k("gain")], hypotheses[_k("IC bas")], hypotheses[_k("IC haut")]
     fig, ax = plt.subplots(figsize=(7.5, 0.45 * len(hypotheses) + 1.3))
     y_pos = np.arange(len(hypotheses))[::-1]
-    ax.errorbar(gain, y_pos, fmt="o", capsize=3, xerr=[gain - bas, haut - gain])
-    ax.axvline(0, color="k", lw=0.8)
+    ax.errorbar(gain, y_pos, fmt="o", capsize=3, xerr=[gain - bas, haut - gain], zorder=2)
+    _cote_mieux(ax)
     ax.set(yticks=y_pos, yticklabels=hypotheses.index,
-           xlabel=_t("gain de MAE sur le QIT moyen (points) [IC 95 %] ; à droite de 0 = mieux",
-                     "MAE gain over the mean FSIQ (points) [95% CI]; right of 0 = better"))
+           xlabel=_t("gain de MAE sur le QIT moyen (points) [IC 95 %]", "MAE gain over the mean FSIQ (points) [95% CI]"),
+           title=_t("Hypothèse soutenue si tout l'intervalle est à droite de 0 (zone bleutée)",
+                    "Hypothesis supported if the whole interval is right of 0 (shaded area)"))
     plt.tight_layout()
-    plt.show()
+    _montrer(fig, fichier)
 
 
 # ===================================================================================== 8. Prédiction conforme
@@ -783,9 +837,12 @@ def graphique_intervalles(conforme, seuil, alpha):
     ax.vlines(range(len(tri)), tri.pred - tri.q, tri.pred + tri.q, color="lightsteelblue", lw=2)
     ax.scatter(range(len(tri)), vrai, s=10, c=np.where(dedans, "black", "tab:red"), zorder=3)
     ax.axhline(seuil, color="grey", ls=":", lw=1)
+    q_ref = conforme["q_ref"].mean()
     ax.set(xlabel=_t("enfants triés par QIT prédit", "children sorted by predicted FSIQ"), ylabel=_t("QIT", "FSIQ"),
-           title=_t(f"Intervalles à {1 - alpha:.0%} (rouge : vrai QIT en dehors)",
-                    f"{1 - alpha:.0%} intervals (red: true FSIQ outside)"))
+           title=_t(f"Intervalles à {1 - alpha:.0%} (rouge : vrai QIT en dehors)\n"
+                    f"Modèle utile si ses barres sont plus courtes que ± {q_ref:.1f}, la largeur autour du QIT moyen",
+                    f"{1 - alpha:.0%} intervals (red: true FSIQ outside)\n"
+                    f"Model useful if its bars are shorter than ± {q_ref:.1f}, the width around the mean FSIQ"))
     plt.tight_layout()
     plt.show()
 
@@ -805,14 +862,16 @@ def importances_permutation(Xd, y, plis, n_jobs=-1):
     return pd.concat(morceaux, axis=1).mean(axis=1).sort_values(ascending=False)
 
 
-def graphique_importances(importances, titre):
+def graphique_importances(importances, titre, fichier=None):
     haut = importances.head(10)[::-1]
-    fig, ax = plt.subplots(figsize=(7.5, 4))
-    ax.barh(haut.index, haut, color="tab:blue")
-    ax.axvline(0, color="k", lw=0.8)
-    ax.set(xlabel=_t("baisse de l'AUC quand l'indice est mélangé", "drop in AUC when the index is shuffled"), title=titre)
+    fig, ax = plt.subplots(figsize=(7.5, 4.3))
+    ax.barh(haut.index, haut, color="tab:blue", zorder=2)
+    _cote_mieux(ax)
+    ax.set(xlabel=_t("baisse de l'AUC quand l'indice est mélangé", "drop in AUC when the index is shuffled"),
+           title=f"{titre}\n" + _t("Au-dessus de 0 (zone bleutée) : l'indice aide le modèle ; près de 0 : il ne sert pas",
+                                   "Above 0 (shaded area): the index helps the model; near 0: it is not used"))
     plt.tight_layout()
-    plt.show()
+    _montrer(fig, fichier)
 
 
 # ===================================================================================== Noms anglais
