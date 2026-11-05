@@ -229,3 +229,140 @@ The output path is provided through the WRITE_PATH environment variable. This ge
 
 > Note: despite the section title, the notebook currently standardizes and imputes the complete predictor dataframe before the regression section; it does not yet create a separate train/test split at this stage.
 
+## Regression models
+
+The selected dataset is reloaded from ``df_merged_lasso_selected_imputed.csv``. The predictors are stored in ``X_train``, while the QIT score is stored in ``y_train``.
+
+Five regression algorithms are evaluated:
+
+- ElasticNet
+- Random Forest
+- LightGBM
+- XGBoost
+- Support Vector Regression (SVR)
+
+### Hyperparameter tuning
+
+For each model, ``RandomizedSearchCV`` tests 50 randomly selected hyperparameter combinations.
+
+The models are evaluated using:
+- 5-fold cross-validation
+- Shuffled folds
+- ``random_state=42`` for reproducibility
+- Negative mean absolute error as the scoring metric
+
+The best model is refitted using the optimal hyperparameters and saved with Joblib in the directory specified by ``MODELS_PATH``.
+
+### ElasticNet
+
+ElasticNet combines L1 and L2 regularization. It is suitable when predictors are correlated.
+
+The hyperparameter search space includes:
+- ``alpha``: Regularization strength, sampled from a log-uniform distribution between 1e-4 and 1e2
+- ``l1_ratio``: The mix between L1 and L2 regularization, sampled uniformly between 0 and 1
+
+The optimized model is saved as ``best_elasticnet_model.joblib``
+
+### Random Forest
+
+The random forest regressor is tuned using:
+
+- Number of trees in the forest (n_estimators): 200 to 500
+- Maximum depth of the trees (max_depth): [None, 3, 5, 7]
+- Minimum number of samples required to split a node (min_samples_split): [5, 10, 20]
+- Number of features considered at each split (max_features): 'sqrt', 'log2'
+
+### LightGBM
+
+The LightGBM regressor is tuned using:
+
+- Number of estimators (n_estimators): [100, 300]
+- Learning rate (learning_rate): [0.01, 0.05, 0.1]
+- Maximum depth of the trees (max_depth): [3, 5, 7]
+- Minimum number of samples required to split a node (min_child_samples): [1, 5]
+- L1 regularization term (reg_alpha): [0.001, 0.1, 0.5]
+- L2 regularization term (reg_lambda): [0.0, 0.1, 1.0]
+
+The optimized model is saved as ``best_lightgbm_model.joblib``
+
+### XGBoost
+
+The XGBoost regressor is tuned using:
+
+- Number of estimators (n_estimators): [100, 300]
+- Learning rate (learning_rate): [0.01, 0.05, 0.1]
+- Maximum depth of the trees (max_depth): [3, 5, 7]
+- Minimum child weight (min_child_weight): [1, 5]
+- Row subsample ratio (subsample): [0.8, 1.0]
+- Regularization term (reg_alpha): [0.001, 0.1, 0.5]
+- Regularization term (reg_lambda): [0.0, 1.0, 10.0]
+
+The optimized model is saved as ``best_xgboost_model.joblib``
+
+### Support Vector Regression (SVR)
+
+The SVR model is placed in a pipeline with a standard scaler. It is tuned using:
+- Regularization parameter (C): [0.1, 1, 10, 100]
+- epsilon in the epsilon-insensitive loss function (epsilon): [0.01, 0.1, 1.0]
+- Kernel type (kernel): ['linear', 'rbf']
+- Gamma parameter for the RBF kernel (gamma): ['scale', 'auto']
+
+The optimized model is saved as ``best_svr_model.joblib``
+
+## Initial evaluation of the models
+
+The first comparison uses 5-fold cross-validation and MAE as the optimization metric. 
+
+|Model|	Cross-validated MAE|
+|---|---|
+|ElasticNet	|10.3853|
+|SVR	|10.4125|
+|XGBoost	|10.5920|
+|Random Forest	|10.6362|
+|LightGBM	|11.1753|
+
+ElasticNet achieves the lowest MAE in this comparison. However, the notebook subsequently performs a more robust nested cross-validation evaluation.
+
+## Nested cross-validation
+
+The final evaluation uses:
+
+- An inner 5-fold cross-validation for hyperparameter tuning
+- An outer 5-fold cross-validation for model evaluation
+- Three repetitions of the outer folds
+- MAE, MSE, RMSE, and R² as evaluation metrics
+
+A full evaluation has been commented out in the notebook to save time. 
+
+For every outer fold, the hyperparameters are selected only from the corresponding training data. This reduces the risk of optimistic performance estimates.
+
+The results are stored in a dataframe and saved to a CSV file. The notebook also generates boxplots of the evaluation metrics for each model.
+
+| Model | MAE | MSE | RMSE | R² |
+|---|---:|---:|---:|---:|
+| ElasticNet | 10.440 ± 1.149 | 167.929 ± 40.140 | 12.864 ± 1.566 | −0.050 ± 0.050 |
+| Random Forest | 10.595 ± 1.213 | 173.164 ± 40.331 | 13.065 ± 1.569 | −0.084 ± 0.055 |
+| LightGBM | 10.677 ± 1.262 | 173.606 ± 39.493 | 13.086 ± 1.541 | −0.089 ± 0.076 |
+| XGBoost | 10.597 ± 1.244 | 172.217 ± 40.302 | 13.027 ± 1.583 | −0.078 ± 0.085 |
+| SVR | 10.446 ± 1.107 | 167.461 ± 37.390 | 12.857 ± 1.470 | −0.050 ± 0.047 |
+
+ElasticNet obtains the lowest MAE, while SVR obtains the lowest MSE and RMSE. Their performances are very similar.
+
+All models have negative (R^2) values. This means that they perform worse than a baseline model that always predicts the mean QIT score. Consequently, the current HRV features and modelling approach do not demonstrate useful predictive performance for this dataset 
+
+## Viasualization of the results
+
+The notebook generates three types of  plots:
+
+1. **MAE Boxplots**: Visualizes the distribution of MAE scores across the outer folds for each model.
+2. **R² Bar Plot**: Displays the mean R² score for each model, with a baseline R² of 0 indicated.
+3. **Fold-level Score Boxplots**: Shows the distribution of MAE, MSE, RMSE, and R² scores across the outer folds for each model.
+
+The plots are saved to the path specified in the `.env` file (``WRITE_PATH_PLOTS``) and are intended for local use. They are not committed to the repository.
+
+```
+model_comparison_mae.png
+model_comparison_r2.png
+model_comparison_boxplots.png
+```
+
