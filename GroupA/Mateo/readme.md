@@ -62,3 +62,89 @@ The resulting dataframe is stored in ``df_results``, and its first ten rows are 
 
 
 
+## Preprocessing and merging the datasets
+
+After loading the three datasets, the notebook prepares them for merging and modelling.
+
+### Target variable selection
+
+The notebook supports four possible WPPSI-III target variables, which can be selected by setting the `TARGET_VARIABLE` and `AFTER_MERGE_TARGET_VARIABLE` in the `.env` file. The available options are:
+
+- ``QIT``: Full-scale IQ score
+- ``QIV``: Verbal IQ score
+- ``QIP``: Performance IQ score
+- ``NCL``: Non-verbal Cognitive Level score
+
+For this analysis, the target variable is set to ``QIT`` (Full-scale IQ score), and the corresponding after-merge target variable is set to ``Note composite_(QIT)``.
+
+### Selecting M0 records
+
+The HRV datasets contain measurements from different recording periods. Only measurements taken at ``M0`` are retained.
+
+The notebook locates the ``Passage`` column in the multi-level column index, converts its values to strings, removes surrounding whitespace, and filters both HRV datasets:
+
+```python
+df_linear_m0 = df_linear.loc[passage.eq("M0")].copy()
+df_non_linearity_m0 = df_non_linearity.loc[passage.eq("M0")].copy()
+```
+
+This ensures that the linear and nonlinear HRV features correspond to the same neonatal recording period
+
+### Removing missing target values
+
+Participants without QTI scores cannot be used for supervised regression. They are therefore removed from the WPPSI-III results dataset:
+
+```python
+df_results_clean = df_results.dropna(
+    subset=[("Note composite", TARGET_VARIABLE)]
+).copy()
+```
+
+Only rows with a valid QIT value are retained
+
+### Preparing column names
+
+The HRV and WPPSI datasets initially use pandas ``MultiIndex`` columns. These are converted into single strings to simplify the merge operations.
+
+For example, a column with the levels ``("Feature", "unit")`` becomes ``"Feature_unit"``. 
+
+Columns without a description retain only their main name.
+
+### Merging lienar and non-linear HRV datasets
+
+The two HRV datasets are merged using an inner join on:
+- ``Monogramme`` : Unique participant identifier
+- ``DDN`` : Date of birth
+- ``Passage`` : Recording period
+
+```python
+df_merged = pd.merge(
+    df_linear_m0_clean,
+    df_non_linearity_m0_clean,
+    on=["Monogramme", "DDN", "Passage_(-)"],
+    how="inner",
+)
+```
+
+The inner join keeps only participants present in both HRV datasets.
+
+### Merging HRV and WPPSI-III datasets
+
+The merged HRV dataframe is then joined with the cleaned WPPSI results using:
+
+- ``Monogramme`` : Unique participant identifier
+- ``DDN`` : Date of birth
+
+Only the participant identifiers and the selected QIT target are retained from the WPPSI dataframe. The final merged dataset is stored in ``df_merged_full`` and saved to the path specified in the `.env` file.
+
+### Removing empty columns and handling missing values
+
+The ``drop_empty()`` function performs the first missing-value cleanup:
+
+1. Removes columns that are entirely empty
+2. Converts missing-values markers such as ``"-"`` and ``"NaN"`` to actual ``NaN`` values
+3. Removes columns that became completely empty after the conversion
+4. Replaces missing values in the remaining columns with the mean of each column
+
+The cleaned dataframe is stored as ``df_merged_full_clean``. The notebook then reports its dimensions and remaining missing values.
+
