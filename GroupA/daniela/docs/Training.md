@@ -23,7 +23,6 @@ Because the sample is small (n ≈ 190) relative to the number of features (~60)
 
 - **Outer CV:** 5-fold `KFold` (shuffle, random_state=42) — unbiased performance estimation.
 - **Inner CV:** 4-fold `KFold` + `GridSearchCV` — hyperparameter tuning only, scoring by `neg_mean_absolute_error`.
-- **Models compared:** `Ridge`, `Lasso`, `ElasticNet`, `BayesianRidge`.
 - **Pipeline:** `SimpleImputer(strategy="mean")` → `StandardScaler()` → model, fit on training folds only.
 - Selection criterion: best model by outer-CV MAE. The selected model is refit on all data via `GridSearchCV` and saved as `regression_model_{TARGET_COLUMN}.pkl`.
 
@@ -42,6 +41,8 @@ Cell 7 produces Predicted vs Actual IQ and Residual plots using out-of-fold (out
 - Load: `joblib.load(f"regression_model_{TARGET_COLUMN}.pkl")` then `predict(X_new)`.
 ---
 # Results 
-1.  [[Regularized Models + Auto shifting]]
+1. [[Regularized Models + Auto shifting]]
 2. [[Regularized Models + Manual shifting]]
-3. 
+3. [[Other Models + Manual shifting]]
+4. [[Other models + Auto shifting]]
+5. 

@@ -62,8 +62,8 @@ Detailed info in [[Feature Cleaning]].
 Regression with ... — WPPSI-III IQ from Neonatal ECG/HRV. Trains different regression models to predict WPPSI-III IQ scores (Full-Scale `Note composite_WPPSI`, Verbal `NS Verb._WPPSI`, Performance `NS Perf._WPPSI`, …) from neonatal linear + nonlinear HRV features (AuBE cohort, M0 recordings only).
 
 I grouped the tries in the following Jupiter Notebooks:
-- regularizedModels.ipynb
-- otherModels.ipynb
+- regularizedModels.ipynb (Ridge, Lasso, ElasticNet and BayesianRidge)
+- otherModels.ipynb (Random Forest, Light GBM, XGBoost, SVR)
 
 More info about the general structure in [[Training]].
 
