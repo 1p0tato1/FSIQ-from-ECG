@@ -1,5 +1,5 @@
 # Prédiction du QI à 3 ans à partir de la HRV néonatale : résumé
-*Groupe A · Jade · généré le 04/11/2026 par `01_prediction_qit.ipynb` · 10 × 5 plis*
+*Groupe A · Jade · généré le 05/11/2026 par `01_prediction_qit.ipynb` · 10 × 5 plis*
 
 ## Conclusion
 **Aucun modèle ne fait mieux que prédire le score moyen, sur aucune cible.** La HRV retrouve pourtant bien la prématurité (AUC 0.79) : les données et la méthode savent voir un lien quand il existe.
