@@ -148,3 +148,84 @@ The ``drop_empty()`` function performs the first missing-value cleanup:
 
 The cleaned dataframe is stored as ``df_merged_full_clean``. The notebook then reports its dimensions and remaining missing values.
 
+## Feature selection and engineering
+
+### Removing features with excessive missing values
+
+Features containing more than 80% missing values are removed. The missingness ratio is calculated for each column:
+
+```python
+missing = df.isnull().sum() / len(df)
+```
+
+Columns exceeding the threshold are dropped using ``remove_high_missing()``. The resulting dataframe is stored in ``df_merged_full_clean_80``
+
+### Converting features to numeric
+
+Since many columns are initially stored as object, the notebook attempts to convert all columns to numeric values:
+
+```python
+df_merged_full_clean_80_num = df_merged_full_clean_80.apply(
+    pd.to_numeric,
+    errors="coerce"
+)
+```
+
+Values that cannot be converted become ``NaN``. Columns that are entirely non-numeric are identified and preserved separately so that they can be restored after the numerical feature filtering.
+
+### Removing highly correlated features
+
+A correlation matrix is calculated for the numeric features. When two features have an absolute correlation greater than ``0.95``, one of them is removed.
+
+The upper triangular part of the correlation matrix is inspected to avoid evaluating each pair twice. This reduces redundancy and limits multicollinearity in the models.
+
+The filtered dataframe is stored in ``df_merged_full_clean_80_corr``. The correlation matrix is also visualized as a heatmap
+
+### Removing near-zero variance features
+
+Features with variance below ``0.01`` are removed using ``remove_nearzero_variance()``.
+
+Such features contain little variation between participants and are unlikely to provide useful predictive information. The resulting dataframe retains the remaining numeric and non-numeric columns.
+
+### Lasso feature selection
+
+A Lasso regression is used to select predictive features:
+
+1. The target column is separated from the predictors
+2. Missing numeric values are imputed with the mean of each column
+3. Numeric predictors are standardized with ``StandardScaler``
+4. A lasso model is fitted with ``alpha=0.01``.
+5. Features with non-zero coefficients are retained.
+6. 
+Although the function is named ``lasso_elasticnet_feature_selection()`` and accepts an ``l1_ratio`` argument, the implementation uses ``Lasso``, not ``ElasticNet``. The selected predictors are stored in ``selected_features``, and the reduced dataframe is stored in ``df_merged_lasso_selected``.
+
+### Removing unrelated and target-leaking features
+
+The column ``Numéro_x`` is removed because it is an identifier and does not provide predictive information.
+
+The notebook also removes all columns containing "Note composite" in their name except the selected target variable. 
+
+```python
+columns_to_drop = [
+    col for col in df_took_off.columns
+    if "Note composite" in col
+    and col != AFTER_MERGE_TARGET_VARIABLE
+]
+```
+
+This prevents other WPPSI scores from being used as predictors and reduces the risk of target-related information entering the models 
+
+### Standardizing and imputating final features
+
+The remaining numeric predictors are separated from the target variable. They are standardized using ``StandardScaler``, then missing values are imputed with the mean using ``SimpleImputer``.
+
+The processed predictors are combined with the QIT target and saved as:
+
+```
+df_merged_lasso_selected_imputed.csv
+```
+
+The output path is provided through the WRITE_PATH environment variable. This generated file is intended for local use and is not committed to the repository
+
+> Note: despite the section title, the notebook currently standardizes and imputes the complete predictor dataframe before the regression section; it does not yet create a separate train/test split at this stage.
+
