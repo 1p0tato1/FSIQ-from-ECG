@@ -2,6 +2,43 @@
 
 This markdown goes through the notebook in this folder, it is a summary of the steps taken to preprocess the data and train the model.
 
+- [readme](#readme)
+  - [Data loading and initialization](#data-loading-and-initialization)
+    - [Environment Configuration](#environment-configuration)
+    - [Loading HRV data](#loading-hrv-data)
+    - [Loading WPPSI-III results data](#loading-wppsi-iii-results-data)
+    - [Important execution note](#important-execution-note)
+  - [Preprocessing and merging the datasets](#preprocessing-and-merging-the-datasets)
+    - [Target variable selection](#target-variable-selection)
+    - [Selecting M0 records](#selecting-m0-records)
+    - [Removing missing target values](#removing-missing-target-values)
+    - [Preparing column names](#preparing-column-names)
+    - [Merging lienar and non-linear HRV datasets](#merging-lienar-and-non-linear-hrv-datasets)
+    - [Merging HRV and WPPSI-III datasets](#merging-hrv-and-wppsi-iii-datasets)
+    - [Removing empty columns and handling missing values](#removing-empty-columns-and-handling-missing-values)
+  - [Feature selection and engineering](#feature-selection-and-engineering)
+    - [Removing features with excessive missing values](#removing-features-with-excessive-missing-values)
+    - [Converting features to numeric](#converting-features-to-numeric)
+    - [Removing highly correlated features](#removing-highly-correlated-features)
+    - [Removing near-zero variance features](#removing-near-zero-variance-features)
+    - [Lasso feature selection](#lasso-feature-selection)
+    - [Removing unrelated and target-leaking features](#removing-unrelated-and-target-leaking-features)
+    - [Standardizing and imputating final features](#standardizing-and-imputating-final-features)
+  - [Regression models](#regression-models)
+    - [Hyperparameter tuning](#hyperparameter-tuning)
+    - [ElasticNet](#elasticnet)
+    - [Random Forest](#random-forest)
+    - [LightGBM](#lightgbm)
+    - [XGBoost](#xgboost)
+    - [Support Vector Regression (SVR)](#support-vector-regression-svr)
+  - [Initial evaluation of the models](#initial-evaluation-of-the-models)
+  - [Nested cross-validation](#nested-cross-validation)
+  - [Viasualization of the results](#viasualization-of-the-results)
+  - [SHAP-based feature analysis](#shap-based-feature-analysis)
+    - [Best SHAP-based results](#best-shap-based-results)
+    - [Interpretation](#interpretation)
+
+
 ## Data loading and initialization
 
 The notebook begins by importing the librairies required for data manipulation, visualization, preprocessing, and model training, model persistence. The main dependencies are `Numpy`, `Pandas`, `Matplotlib`, `Seaborn`, `Scikit-learn`, `LightGBM`, `XGBoost`, and `joblib`.
@@ -386,3 +423,26 @@ For ElasticNet, the model used for SHAP ranking is Random Forest because the pre
 
 > Note: The SHAP analysis is exploratory. Since the test set is used to compare the models using 1 to 5 features, the final feature-count comparison should not be considered an unbiased performance estimate. Nested cross-validation remains the preferred method for final model evaluation.
 
+### Best SHAP-based results
+
+The following table reports the best result obtained for each model, selected according to the lowest MAE. The selected features are the top features identified by SHAP.
+
+| Model | Number of features | Selected features | MAE | RMSE | R² |
+|---|---:|---|---:|---:|---:|
+| Random Forest | 1 | `1V% (Symb24h)_(n)` | 8.405 | 10.266 | 0.046 |
+| XGBoost | 7 | `MP% (Symb24h)_(n)`, `1V% (Symb24h)_(n)`, `pHF1(EMDDay)_(ms^2)`, `SE (EntropyDay)_(-)`, `Skewness (MTNight)_(-)`, `X (GIDay)_(ms)`, `nb RR excluded total_(-)` | 8.546 | 10.297 | 0.040 |
+| LightGBM | 5 | `MP% (Symb24h)_(n)`, `X (GIDay)_(ms)`, `Skewness (MTNight)_(-)`, `1V% (Symb24h)_(n)`, `SE (EntropyDay)_(-)` | 8.767 | 10.647 | −0.026 |
+| SVR | 4 | `Katz (24h)_(-)`, `SFA (HIV 3-4)_x`, `SampEn (Entropy24h)_(-)`, `1V% (Symb24h)_(n)` | 9.003 | 10.522 | −0.002 |
+| ElasticNet | 2 | `1V% (Symb24h)_(n)`, `MP% (Symb24h)_(n)` | 9.013 | 10.663 | −0.029 |
+
+### Interpretation
+
+Random Forest achieved the lowest MAE (8.405) and the lowest RMSE (10.266). It required only one feature: `1V% (Symb24h)_(n)`. Its R² value was positive (0.046), meaning that it performed slightly better than the mean-prediction baseline on this test split.
+
+XGBoost produced the second-best result, with an MAE of 8.546 and an R² of 0.040. It used seven features, including `1V% (Symb24h)_(n)` and `MP% (Symb24h)_(n)`.
+
+LightGBM, SVR, and ElasticNet obtained negative R² values. These models therefore performed slightly worse than a baseline that always predicts the mean target value. Their selected features may still be useful for explaining model predictions, but their predictive performance is weak on this test split.
+
+The feature `1V% (Symb24h)_(n)` appears in the selected feature sets of Random Forest, XGBoost, LightGBM, SVR, and ElasticNet. This suggests that it is consistently identified as relevant by several models. However, SHAP importance is model-specific and does not establish a causal relationship with the target.
+
+These results are exploratory because the same test set was used to compare different models and different numbers of features. The apparent advantage of Random Forest and XGBoost should therefore be confirmed using the nested cross-validation procedure described earlier in this README.
