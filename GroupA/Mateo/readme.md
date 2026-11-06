@@ -365,4 +365,24 @@ model_comparison_mae.png
 model_comparison_r2.png
 model_comparison_boxplots.png
 ```
+## SHAP-based feature analysis
+
+SHAP (SHapley Additive exPlanations) is used to estimate how much each feature contributes to the predictions of each trained model.
+
+For every model:
+
+1. The data is divided into training and test sets.
+2. The model is fitted using only the training data.
+3. SHAP values are calculated on the training data.
+4. Features are ranked according to their mean absolute SHAP value.
+5. New models are trained using the top 1, 2, 3, 4, and 5 features (or up to 8 for those models that support it).
+6. Performance is evaluated on the same test set using MAE, RMSE, and R².
+
+The mean absolute SHAP value measures the average importance of a feature, without considering whether its effect is positive or negative. A larger value indicates that the feature has a stronger influence on the model predictions.
+
+SHAP is model-specific: different models can produce different feature rankings. Therefore, a feature ranked highly by one model is not necessarily the most important feature for another model.
+
+For ElasticNet, the model used for SHAP ranking is Random Forest because the previously saved ElasticNet model had all coefficients equal to zero. ElasticNet is then re-tuned separately for each number of selected features.
+
+> Note: The SHAP analysis is exploratory. Since the test set is used to compare the models using 1 to 5 features, the final feature-count comparison should not be considered an unbiased performance estimate. Nested cross-validation remains the preferred method for final model evaluation.
 
