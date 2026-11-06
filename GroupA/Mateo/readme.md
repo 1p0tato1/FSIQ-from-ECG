@@ -423,26 +423,29 @@ For ElasticNet, the model used for SHAP ranking is Random Forest because the pre
 
 > Note: The SHAP analysis is exploratory. Since the test set is used to compare the models using 1 to 5 features, the final feature-count comparison should not be considered an unbiased performance estimate. Nested cross-validation remains the preferred method for final model evaluation.
 
+
 ### Best SHAP-based results
 
-The following table reports the best result obtained for each model, selected according to the lowest MAE. The selected features are the top features identified by SHAP.
+The table below reports the best feature count for each model, selected using the lowest mean MAE across the five cross-validation folds. Results are reported as mean ± standard deviation.
 
-| Model | Number of features | Selected features | MAE | RMSE | R² |
-|---|---:|---|---:|---:|---:|
-| Random Forest | 1 | `1V% (Symb24h)_(n)` | 8.405 | 10.266 | 0.046 |
-| XGBoost | 7 | `MP% (Symb24h)_(n)`, `1V% (Symb24h)_(n)`, `pHF1(EMDDay)_(ms^2)`, `SE (EntropyDay)_(-)`, `Skewness (MTNight)_(-)`, `X (GIDay)_(ms)`, `nb RR excluded total_(-)` | 8.546 | 10.297 | 0.040 |
-| LightGBM | 5 | `MP% (Symb24h)_(n)`, `X (GIDay)_(ms)`, `Skewness (MTNight)_(-)`, `1V% (Symb24h)_(n)`, `SE (EntropyDay)_(-)` | 8.767 | 10.647 | −0.026 |
-| SVR | 4 | `Katz (24h)_(-)`, `SFA (HIV 3-4)_x`, `SampEn (Entropy24h)_(-)`, `1V% (Symb24h)_(n)` | 9.003 | 10.522 | −0.002 |
-| ElasticNet | 2 | `1V% (Symb24h)_(n)`, `MP% (Symb24h)_(n)` | 9.013 | 10.663 | −0.029 |
+| Model | Features | MAE | RMSE | R² |
+|---|---:|---:|---:|---:|
+| XGBoost | 8 | 10.304 ± 1.219 | 12.742 ± 1.633 | −0.045 ± 0.091 |
+| Random Forest | 5 | 10.367 ± 1.410 | 12.760 ± 1.760 | −0.050 ± 0.142 |
+| LightGBM | 5 | 10.377 ± 1.344 | 12.794 ± 1.610 | −0.058 ± 0.137 |
+| SVR | 5 | 10.393 ± 1.186 | 12.832 ± 1.554 | −0.059 ± 0.038 |
+| ElasticNet | 1 | 10.441 ± 1.209 | 12.880 ± 1.587 | −0.067 ± 0.044 |
 
 ### Interpretation
 
-Random Forest achieved the lowest MAE (8.405) and the lowest RMSE (10.266). It required only one feature: `1V% (Symb24h)_(n)`. Its R² value was positive (0.046), meaning that it performed slightly better than the mean-prediction baseline on this test split.
+XGBoost achieved the lowest mean MAE, with `10.304 ± 1.219`, using eight SHAP-ranked features. It also obtained the lowest mean RMSE and the least negative mean R².
 
-XGBoost produced the second-best result, with an MAE of 8.546 and an R² of 0.040. It used seven features, including `1V% (Symb24h)_(n)` and `MP% (Symb24h)_(n)`.
+Random Forest, LightGBM, and SVR produced very similar results. Their mean MAEs differed by less than 0.03 points, so this small difference should not be interpreted as a meaningful performance advantage.
 
-LightGBM, SVR, and ElasticNet obtained negative R² values. These models therefore performed slightly worse than a baseline that always predicts the mean target value. Their selected features may still be useful for explaining model predictions, but their predictive performance is weak on this test split.
+ElasticNet achieved the highest mean MAE among the models, although its best configuration used only one feature. This indicates that reducing the number of features did not improve its predictive performance.
 
-The feature `1V% (Symb24h)_(n)` appears in the selected feature sets of Random Forest, XGBoost, LightGBM, SVR, and ElasticNet. This suggests that it is consistently identified as relevant by several models. However, SHAP importance is model-specific and does not establish a causal relationship with the target.
+All models had negative mean R² values. Therefore, on average, they performed worse than a baseline model that always predicts the mean target value. The current HRV features and modelling approach do not demonstrate reliable predictive performance for this dataset.
 
-These results are exploratory because the same test set was used to compare different models and different numbers of features. The apparent advantage of Random Forest and XGBoost should therefore be confirmed using the nested cross-validation procedure described earlier in this README.
+The standard deviations show variation between folds. For example, Random Forest has an R² standard deviation of `0.142`, indicating that its performance is relatively sensitive to the data split. SVR has a smaller R² standard deviation of `0.038`, suggesting more stable but still weak performance.
+
+These results are more robust than a single train/test split because they use five-fold cross-validation. However, the SHAP ranking and feature-count comparison should still be interpreted as exploratory. Nested cross-validation remains preferable for an unbiased final performance estimate.
