@@ -16,11 +16,11 @@ Set up repository, development environment, git workflow, and start data inspect
 **Finish data preprocessing, merging, and feature engineering**, produce final modeling dataset.
 
 ### Steps
-- [ ] Filter both HRV files to `Passage == "M0"` (birth recordings only)
-- [ ] Drop WPPSI rows missing target IQ (QIT, QIV, QIP, NCL)
-- [ ] Merge linear + nonlinear HRV on `Monogramme` + `DDN` + `Passage`
-- [ ] Merge HRV + WPPSI on `Monogramme` + `DDN`
-- [ ] Drop fully-empty feature columns; impute remaining NaN with column mean
+- [x] Filter both HRV files to `Passage == "M0"` (birth recordings only)
+- [x] Drop WPPSI rows missing target IQ (QIT, QIV, QIP, NCL)
+- [x] Merge linear + nonlinear HRV on `Monogramme` + `DDN` + `Passage`
+- [x] Merge HRV + WPPSI on `Monogramme` + `DDN`
+- [x] Drop fully-empty feature columns; impute remaining NaN with column mean
 - [ ] **Feature selection / engineering:**
     - [ ] Correlation analysis & removal of highly correlated features (|r| > 0.95)
     - [ ] Variance threshold (remove near-zero variance)
@@ -37,13 +37,13 @@ Set up repository, development environment, git workflow, and start data inspect
 **Implement all regression models** with proper hyperparameter spaces.
 
 ### Models to implement (minimum)
-| Model | Key hyperparameters to tune |
-|-------|----------------------------|
-| **Elastic Net** | `alpha` (logspace -4 to 1), `l1_ratio` [0.1, 0.3, 0.5, 0.7, 0.9] |
-| **Random Forest** | `n_estimators` [200, 500], `max_depth` [3, 5, 7, None], `min_samples_leaf` [5, 10, 20], `max_features` ["sqrt", "log2"] |
-| **LightGBM** | `n_estimators` [100, 300], `learning_rate` [0.01, 0.05, 0.1], `max_depth` [3, 5, -1], `min_child_samples` [10, 20], `reg_alpha`, `reg_lambda` |
-| **XGBoost** | `n_estimators` [100, 300], `learning_rate` [0.01, 0.05, 0.1], `max_depth` [3, 5, 7], `min_child_weight` [1, 5], `reg_alpha`, `reg_lambda`, `subsample` [0.8, 1.0] |
-| **SVR** | `C` [0.1, 1, 10, 100], `epsilon` [0.01, 0.1, 1], `kernel` ["rbf", "linear"], `gamma` ["scale", "auto"] |
+| Model             | Key hyperparameters to tune                                                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Elastic Net**   | `alpha` (logspace -4 to 1), `l1_ratio` [0.1, 0.3, 0.5, 0.7, 0.9]                                                                                                  |
+| **Random Forest** | `n_estimators` [200, 500], `max_depth` [3, 5, 7, None], `min_samples_leaf` [5, 10, 20], `max_features` ["sqrt", "log2"]                                           |
+| **LightGBM**      | `n_estimators` [100, 300], `learning_rate` [0.01, 0.05, 0.1], `max_depth` [3, 5, -1], `min_child_samples` [10, 20], `reg_alpha`, `reg_lambda`                     |
+| **XGBoost**       | `n_estimators` [100, 300], `learning_rate` [0.01, 0.05, 0.1], `max_depth` [3, 5, 7], `min_child_weight` [1, 5], `reg_alpha`, `reg_lambda`, `subsample` [0.8, 1.0] |
+| **SVR**           | `C` [0.1, 1, 10, 100], `epsilon` [0.01, 0.1, 1], `kernel` ["rbf", "linear"], `gamma` ["scale", "auto"]                                                            |
 
 ### Steps
 - [ ] Create `models/` module with each model class + hyperparameter grid
