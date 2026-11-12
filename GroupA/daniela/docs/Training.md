@@ -1,7 +1,7 @@
 ## Scope
 - **Data source:** cleaned + merged table produced by `data_preprocessing.py` / `data_merge.py` / `data_features.py` (`data/clean_data_shifted/merged_dataset_features.csv`, recommended).
 - **Target:** `Note composite_WPPSI` (configurable via `TARGET_COLUMN`; alternatives: `NS Verb._WPPSI`, `NS Perf._WPPSI`, `Rang percentile_WPPSI`).
-- **Features:** all HRV/clinical columns except ID/metadata keys and all WPPSI columns (to prevent target leakage). A feature-selection step (cell 4d) further reduces the feature set before model training.
+- **Features:** all HRV/clinical columns except ID/metadata keys and all WPPSI columns (to prevent target leakage). Feature-selection steps (cells 4d and 4e) further reduce the feature set before model training.
 
 ## Preprocessing (already applied upstream)
 The merged dataset arrives pre-cleaned. Steps already applied (see this document's Data cleaning section):
@@ -32,6 +32,18 @@ Feature selection is performed before model training to reduce dimensionality an
 - Embedded step: `SelectFromModel` with `RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)`, threshold `"median"`.
 - Falls back to SelectKBest features if RF selects zero features.
 - Plots top `k` features by ANOVA F-score.
+
+## Feature selection — Decision Tree + SHAP ranking (cell 4e)
+
+Both notebooks add a tree-based SHAP refinement step (cell 4e) that runs **after** cell 4d:
+
+- Impute missing values with `SimpleImputer(strategy="mean")` (`DecisionTreeRegressor` does not accept NaN).
+- Fit a shallow `DecisionTreeRegressor(random_state=42, max_depth=5)` — depth limited because `n ≈ 188–189`.
+- Explain the tree with `shap.TreeExplainer` (fast and exact for tree models) and compute SHAP values on the imputed features.
+- Rank features by **mean |SHAP value|** across all samples and plot the top 20.
+- Select the top `k = 20` features and set `X = X[feature_cols_shap]`.
+
+Because cell 4e runs after cell 4d, the SHAP-selected subset is the final feature matrix used for all downstream model training, nested CV, evaluation, and saving — it is not overwritten by the ANOVA F / embedded step.
 
 The selected feature subset (`X`) is used for all downstream model training, nested CV, evaluation, and saving.
 
