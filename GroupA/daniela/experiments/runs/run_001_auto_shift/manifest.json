@@ -1,0 +1,54 @@
+{
+  "run_id": "run_001_auto_shift",
+  "timestamp_utc": "2026-11-18T10:52:47.282503+00:00",
+  "git_commit": "0d93d250bc0ac8dc366f550ce1d5c4de3bc36efb",
+  "config_hash": "ac49033523212300c92a050b051086eab6ba25a60f762b30e22a1e0c4bc82503",
+  "config_path": "/home/daniela-pachon/Documents/Studium/WS26-27/BIP Proyect/FSIQ-from-ECG/GroupA/daniela/experiments/config.yaml",
+  "source": "clean_data_auto",
+  "feature_file": "/home/daniela-pachon/Documents/Studium/WS26-27/BIP Proyect/FSIQ-from-ECG/data/clean_data_auto/merged_dataset_features.csv",
+  "n_subjects": 190,
+  "n_features": 59,
+  "targets": [
+    "Note composite_WPPSI",
+    "NS Verb._WPPSI",
+    "NS Perf._WPPSI",
+    "Rang percentile_WPPSI"
+  ],
+  "models": [
+    "Ridge",
+    "Lasso",
+    "ElasticNet",
+    "BayesianRidge",
+    "RandomForest",
+    "LightGBM",
+    "XGBoost",
+    "SVR"
+  ],
+  "best_models": {
+    "Note composite_WPPSI": "Lasso",
+    "NS Verb._WPPSI": "Lasso",
+    "NS Perf._WPPSI": "SVR",
+    "Rang percentile_WPPSI": "ElasticNet"
+  },
+  "predictions_rows": 188,
+  "complete_case_subjects": 188,
+  "cv": {
+    "outer_folds": 5,
+    "inner_folds": 4,
+    "repeats": 1,
+    "scoring": "neg_mean_absolute_error"
+  },
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-7.0.0-43-generic-x86_64-with-glibc2.39",
+    "numpy": "2.5.4",
+    "pandas": "3.1.0",
+    "scikit-learn": "1.9.1",
+    "scipy": "1.18.1",
+    "shap": "0.54.1",
+    "lightgbm": "4.7.0",
+    "xgboost": "3.4.1",
+    "joblib": "1.6.0",
+    "matplotlib": "3.11.2"
+  }
+}
