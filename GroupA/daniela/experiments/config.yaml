@@ -1,0 +1,75 @@
+# Experiment configuration for GroupA/daniela
+#
+# Paths are resolved relative to this file.  The repository root is three
+# levels up: experiments/ -> daniela/ -> GroupA/ -> <repo root>.
+# (The restructure sketch said ".."; that would point at GroupA/, where there
+# is no data/ directory, so the correct value for this layout is "../../..".)
+#
+# Quick start (from GroupA/daniela):
+#   python -m src.preprocessing --shift-repair auto
+#   python -m src.merge --source clean_data_auto
+#   python -m src.features --source clean_data_auto
+#   python -m src.train --config experiments/config.yaml --run-id run_001_auto_shift
+
+project:
+  root: "../../.."
+  data_dir: "data"
+
+preprocessing:
+  shift_repair: auto          # auto | manual
+  mode: any_empty             # any_empty | all_empty
+
+merge:
+  how: inner                  # inner | outer
+
+features:
+  # The trainer loops over every target.  `target_col` is kept for the
+  # documented single-target schema and as a fallback.
+  target_col: "Note composite_WPPSI"
+  targets:
+    - "Note composite_WPPSI"      # Full-scale IQ
+    - "NS Verb._WPPSI"            # Verbal IQ
+    - "NS Perf._WPPSI"            # Performance IQ
+    - "Rang percentile_WPPSI"     # Percentile rank
+  corr_threshold: 0.95
+  id_columns:
+    - "Numéro"
+    - "Monogramme_WPPSI"
+    - "Monogramme_Linear"
+    - "Monogramme_NonLinear"
+
+cv:
+  outer_folds: 5
+  inner_folds: 4
+  random_state: 42
+  scoring: "neg_mean_absolute_error"
+  repeats: 1
+  n_jobs: -1
+
+feature_selection:
+  select_k_best: 20
+  embedded_estimator: "lasso"     # lasso | random_forest | none
+  shap_refinement: true
+  shap_top_k: 20
+  shap_tree_max_depth: 5
+
+models:
+  ridge: true
+  lasso: true
+  elasticnet: true
+  bayesian_ridge: true
+  random_forest: true
+  lightgbm: true
+  xgboost: true
+  svr: true
+
+runs:
+  - id: run_001_auto_shift
+    preprocessing:
+      shift_repair: auto
+    source: clean_data_auto
+
+  - id: run_002_manual_shift
+    preprocessing:
+      shift_repair: manual
+    source: clean_data_manual
