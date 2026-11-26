@@ -227,7 +227,7 @@ Jeu final : **189 enfants**, 25 indices HRV linéaires et 45 non linéaires (à 
 | QIP (performance) | Elastic Net, clinique seul | 9,75  | 9,75              | +0,00 [−0,16 ; 0,17]  |
 | NCL (langage)     | Elastic Net, clinique seul | 11,64 | 11,62             | −0,01 [−0,15 ; 0,13] |
 
-Aucun gain démontré (tous les IC contiennent 0). Ajouter la HRV au modèle clinique fait légèrement moins bien (MAE du QIT de 10,33 à 10,47). Les modèles à base d'arbres (Random Forest, LightGBM, XGBoost) font en moyenne moins bien que la moyenne, sur les 4 cibles.
+Aucun gain démontré (tous les IC contiennent 0). Ajouter la HRV au modèle clinique fait moins bien, de peu mais de façon démontrée (MAE du QIT de 10,33 à 10,47 ; gain sur la moyenne −0,08 [−0,14 ; −0,02]). Les modèles à base d'arbres (Random Forest, LightGBM, XGBoost) font en moyenne moins bien que la moyenne, sur les 4 cibles.
 
 ![Comparaison des modèles](results/comparaison_modeles.png)
 
@@ -257,7 +257,7 @@ Aucun gain démontré (tous les IC contiennent 0). Ajouter la HRV au modèle cli
 
 **Ce qui a été fait.** (a) Repérer les enfants avec un QIT < 90 (40 enfants) plutôt que prédire le score. (b) H1 : la HRV enregistrée plus tard (M6 à M24). (c) H2 : l'évolution de la HRV entre la naissance et 12 ou 24 mois.
 
-**Résultat.** QIT < 90 : AUC 0,50 [0,39 ; 0,61], comme le hasard (kappa 0,02). H1 et H2 : 7 hypothèses, aucune soutenue ; deux font même moins bien que la moyenne (HRV à la naissance : gain −0,13 [−0,22 ; −0,04] ; HRV à 24 mois : −0,14 [−0,24 ; −0,05]).
+**Résultat.** QIT < 90 : AUC 0,50 [0,39 ; 0,61], comme le hasard (kappa 0,00). H1 et H2 : 7 hypothèses, aucune soutenue ; deux font même moins bien que la moyenne (HRV à la naissance : gain −0,13 [−0,22 ; −0,04] ; HRV à 24 mois : −0,14 [−0,24 ; −0,05]).
 
 ![Hypothèses](results/hypotheses.png)
 
@@ -304,7 +304,9 @@ Aucun gain démontré (tous les IC contiennent 0). Ajouter la HRV au modèle cli
 | Kernel ridge multi-noyaux                    | 10,38 | +0,02 [−0,30 ; 0,32]         | non démontré : fait jeu égal avec la moyenne (10,39) |
 
 - **Poids du multi-noyaux** (médiane sur les 50 plis) : clinique **1,00**, HRV linéaire **0,00**, HRV non linéaire **0,00**. Quand on la laisse choisir, la validation croisée **n'utilise pas du tout la HRV** : c'est pour ça que ce modèle rejoint la moyenne au lieu de faire moins bien.
-- **Classement des variables** : l'accord des top 5 entre plis vaut 0,08 pour le QIT (le classement change presque à chaque pli) et 0,22 pour la prématurité (plus stable ; variable en tête : `nl|alpha2 (DFADay)`, un indice fractal de la HRV de jour). Pour savoir si ces valeurs sont bonnes, tout le classement est refait avec le QI (ou la prématurité) mélangé entre enfants : les seuils du hasard ainsi obtenus sont tracés sur les graphiques ci-dessous et repris dans `results/SUMMARY.md`.
+- **Classement des variables** (seuils du hasard : le même classement refait avec le QI, ou la prématurité, mélangé entre enfants) :
+  - pour le QIT, aucune variable ne dépasse le seuil du hasard, et l'accord des top 5 entre plis (0,08) reste sous celui du hasard (0,15) : le classement ne décrit que du bruit ;
+  - pour la prématurité, deux indices dépassent le seuil du hasard, en importance comme en SHAP : `nl|alpha2 (DFADay)`, un indice fractal de la HRV de jour, et `lin|pcNN20 (TD24h)`, la part des battements successifs qui diffèrent de plus de 20 ms (un marqueur du tonus vagal). Leurs valeurs basses vont avec une prématurité plus probable, mais l'effet moyen par quintile reste dans la zone du hasard, et l'ordre des variables suivantes n'est pas plus stable que par hasard (accord 0,22 contre 0,28). La HRV reconnaît donc la prématurité (étape 7) sans qu'un classement fin de ses indices soit fiable avec 189 enfants.
 - **SVR** : ses chiffres changent un peu avec la grille corrigée (tableau de tous les modèles dans `results/SUMMARY.md`) ; il reste moins bon qu'Elastic Net.
 - Réglages retenus pli par pli : [`results/reglages_retenus_QIT.md`](results/reglages_retenus_QIT.md).
 

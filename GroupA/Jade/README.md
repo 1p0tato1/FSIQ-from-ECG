@@ -227,7 +227,7 @@ Final dataset: **189 children**, 25 linear and 45 non-linear HRV indices (at M0,
 | QIP (performance) | Elastic Net, clinical only | 9.75 | 9.75 | +0.00 [−0.16, 0.17] |
 | NCL (language) | Elastic Net, clinical only | 11.64 | 11.62 | −0.01 [−0.15, 0.13] |
 
-No gain is demonstrated (every CI contains 0). Adding HRV to the clinical model does slightly worse (FSIQ MAE from 10.33 to 10.47). Tree-based models (Random Forest, LightGBM, XGBoost) do worse than the mean on average, for all 4 targets.
+No gain is demonstrated (every CI contains 0). Adding HRV to the clinical model does worse, slightly but demonstrably (FSIQ MAE from 10.33 to 10.47; gain over the mean −0.08 [−0.14, −0.02]). Tree-based models (Random Forest, LightGBM, XGBoost) do worse than the mean on average, for all 4 targets.
 
 ![Model comparison](results/en/model_comparison.png)
 
@@ -257,7 +257,7 @@ No gain is demonstrated (every CI contains 0). Adding HRV to the clinical model 
 
 **What was done.** (a) Spot children with FSIQ < 90 (40 children) instead of predicting the score. (b) H1: HRV recorded later (M6 to M24). (c) H2: change in HRV between birth and 12 or 24 months.
 
-**Result.** FSIQ < 90: AUC 0.50 [0.39, 0.61], like chance (kappa 0.02). H1 and H2: 7 hypotheses, none supported; two even do worse than the mean (HRV at birth: gain −0.13 [−0.22, −0.04]; HRV at 24 months: −0.14 [−0.24, −0.05]).
+**Result.** FSIQ < 90: AUC 0.50 [0.39, 0.61], like chance (kappa 0.00). H1 and H2: 7 hypotheses, none supported; two even do worse than the mean (HRV at birth: gain −0.13 [−0.22, −0.04]; HRV at 24 months: −0.14 [−0.24, −0.05]).
 
 ![Hypotheses](results/en/hypotheses.png)
 
@@ -304,7 +304,9 @@ No gain is demonstrated (every CI contains 0). Adding HRV to the clinical model 
 | Multiple kernel ridge | 10.38 | +0.02 [−0.30, 0.32] | not demonstrated: on a par with the mean (10.39) |
 
 - **Multiple kernel weights** (median over the 50 folds): clinical **1.00**, linear HRV **0.00**, non-linear HRV **0.00**. When it is allowed to choose, cross-validation **does not use HRV at all**: this is why this model matches the mean instead of doing worse.
-- **Variable ranking**: the top-5 agreement between folds is 0.08 for FSIQ (the ranking changes almost every fold) and 0.22 for prematurity (more stable; top variable: `nl|alpha2 (DFADay)`, a fractal index of daytime HRV). To tell whether these values are good, the whole ranking is redone with IQ (or prematurity) shuffled between children: the chance thresholds obtained this way are drawn on the plots below and reported in `results/en/SUMMARY.md`.
+- **Variable ranking** (chance thresholds: the same ranking redone with IQ, or prematurity, shuffled between children):
+  - for FSIQ, no variable exceeds the chance threshold, and the top-5 agreement between folds (0.08) stays below the chance level (0.15): the ranking only describes noise;
+  - for prematurity, two indices exceed the chance threshold, in importance as in SHAP: `nl|alpha2 (DFADay)`, a fractal index of daytime HRV, and `lin|pcNN20 (TD24h)`, the share of successive beats that differ by more than 20 ms (a marker of vagal tone). Their low values go with a higher probability of prematurity, but the mean effect by quintile stays within the chance zone, and the order of the following variables is no more stable than chance (agreement 0.22 versus 0.28). HRV therefore recognises prematurity (step 7), but a fine ranking of its indices is not reliable with 189 children.
 - **SVR**: its numbers change slightly with the corrected grid (table of all models in `results/en/SUMMARY.md`); it stays worse than Elastic Net.
 - Settings chosen fold by fold: [`results/en/settings_chosen_QIT.md`](results/en/settings_chosen_QIT.md).
 
