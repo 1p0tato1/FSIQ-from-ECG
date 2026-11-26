@@ -14,6 +14,9 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 .idea/
+.env
+
+*.joblib
 
 # Derived data (gitignored - raw data stays local only, never committed)
 # In this repository the data directory lives at the repo root (data/).
