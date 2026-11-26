@@ -17,3 +17,21 @@ __pycache__/
 .env
 
 *.joblib
+
+# Derived data (gitignored - raw data stays local only, never committed)
+# In this repository the data directory lives at the repo root (data/).
+data/clean_data_*/
+data/**/merged_dataset*.csv
+# Compatibility if a checkout keeps data next to the code instead.
+GroupA/daniela/data/clean_data_*/
+GroupA/daniela/data/**/merged_dataset*.csv
+GroupA/daniela/experiments/runs/*/data/
+GroupA/daniela/experiments/runs/*/*.pkl
+GroupA/daniela/experiments/runs/*/*.csv
+GroupA/daniela/experiments/runs/*/plots/*.png
+
+# Large analysis CSVs not needed in git
+GroupA/daniela/docs/reports/Antwort/*.csv
+
+# Python
+*.pyc
