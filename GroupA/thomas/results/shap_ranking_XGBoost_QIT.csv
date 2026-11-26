@@ -1,0 +1,53 @@
+feature,mean_abs_shap
+pHF1(EMDDay)_(ms^2),0.70551884
+HF (FT24h)_(ms^2),0.31920916
+LF (FTNight)_(ms^2),0.27508408
+1V% (Symb24h)_(n),0.26116213
+H (DFA24h)_(-),0.2442909
+Skewness (MTNight)_(-),0.23098138
+NN50 (TD24h)_(%),0.20562625
+nb RR excluded total_(-),0.19858797
+MP% (Symb24h)_(n),0.17717382
+2LV% (Symb24h)_(n),0.1746197
+pLF2(EMDDay)_(ms^2),0.17288122
+pcNN20 (TD24h)_(-),0.17072873
+Ptot (FTDay)_(ms^2),0.13851309
+Mean RR (TD24h)_(-),0.13456611
+Lyapunov (LLE24h)_(-),0.12642945
+LF (FTDay)_(ms^2),0.11786051
+nb RR analyzed total_(-),0.11228589
+Katz (24h)_(-),0.112228476
+2UV% (Symb24h)_(n),0.105859175
+pcNN30 (TD24h)_(-),0.101204276
+0V% (Symb24h)_(n),0.09902933
+Tri ind (GIDay)_(ms),0.0976992
+RMSSD (TD24h)_(ms),0.08706634
+Kurtosis (MT24h)_(-),0.07749568
+Mean HR (TDDay)_(ms),0.07733901
+nb RR corrected total_(-),0.07464148
+SampEn (Entropy24h)_(-),0.06929112
+TINN (GIDay)_(-),0.06586351
+SE (Entropy24h)_(-),0.060832758
+SDNNIDX (TD24h)_(ms),0.05966875
+IMAI1(EMD24h)_(ms^2),0.058995474
+alpha2 (DFA24h)_(-),0.058919817
+alpha1 (DFADay)_(-),0.058343958
+Y (GI24h)_(ms),0.056635536
+X (GIDay)_(ms),0.0564412
+pLF1(EMDDay)_(-),0.056052722
+SFA_(HIV 3-4)_x,0.05328136
+SE (EntropyDay)_(-),0.05208372
+VLF (FTDay)_(ms^2),0.050059658
+Mean RR (TDDay)_(ms),0.048446357
+NN20 (TDDay)_(bpm),0.042786717
+M (GI24h)_(ms),0.04262621
+IMAI2(EMD24h)_(-),0.04074446
+0V% (SymbDay)_(n),0.039088793
+alpha1 (DFA24h)_(ms/beat),0.022840507
+R�a � la naissance_(LMPV)_x,0.017196927
+Tabac_(0/1)_x,0.01441394
+Hurst (24h)_(-),0.012076247
+Diabète_(0/1)_x,0.009834051
+Maturation Pulm_(0/1)_x,0.0058626044
+Prématuré_(0/1)_x,0.00397087
+HTA_(0/1)_x,0.003110699
