@@ -5,6 +5,10 @@ colonne CB sont décalées de 2 colonnes vers la gauche : le script les décale 
 que la valeur de CB passe en CD, celle de CC en CE, etc. Les 2 cases vides (« - ») qui terminent ces lignes prennent
 la place libérée en CB et CC. Les autres lignes et les colonnes avant CB ne changent pas.
 
+Pourquoi corriger le fichier lui-même : le notebook lit les fichiers d'origine, et non les copies nettoyées par le
+script de l'équipe GroupA/clean_data.py, qui ne gardent que les enregistrements de naissance (M0) alors que le
+notebook a aussi besoin de ceux de 6 à 24 mois.
+
 Le fichier est traité octet par octet : encodage, séparateur et fins de ligne sont conservés tels quels.
 Une copie de l'original est gardée à côté (..._avant_correction.csv), et le script refuse de tourner deux fois.
 Il n'affiche que des numéros de ligne et des nombres de cases, jamais de valeurs.

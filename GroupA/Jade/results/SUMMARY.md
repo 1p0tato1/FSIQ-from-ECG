@@ -1,12 +1,12 @@
 # Prédiction du QI à 3 ans à partir de la HRV néonatale : résumé
-*Groupe A · Jade · généré le 05/11/2026 par `01_prediction_qit.ipynb` · 10 × 5 plis*
+*Groupe A · Jade · généré le 06/11/2026 par `01_prediction_qit.ipynb` · 10 × 5 plis*
 
 ## Conclusion
 **Aucun modèle ne fait mieux que prédire le score moyen, sur aucune cible.** La HRV retrouve pourtant bien la prématurité (AUC 0.79) : les données et la méthode savent voir un lien quand il existe.
 
 ## Données et méthode
 - 189 enfants de la cohorte AuBE (enregistrement à la naissance, scores WPPSI-III complets) ; 25 indices HRV linéaires, 45 non linéaires, 6 covariables cliniques.
-- Modèles : Elastic Net, LightGBM, Random Forest, SVR, XGBoost ; réduction des variables dans chaque pli ; évaluation sur les plis communs de l'équipe (10 × 5, `evaluate_model.py`).
+- Modèles : Arbre de décision, Elastic Net, Kernel ridge, Kernel ridge multi-noyaux, LightGBM, Random Forest, Régression linéaire, SVR, XGBoost ; réduction des variables dans chaque pli ; évaluation sur les plis communs de l'équipe (10 × 5, `evaluate_model.py`).
 
 ## Régression (meilleur modèle par cible)
 | Cible | Modèle | MAE ± écart-type | R² | MAE de la moyenne | Gain vs moyenne [IC 95 %] |
@@ -21,6 +21,15 @@
 - Limite de détection (simulation) : avec ces enfants, la méthode voit un lien dès qu'il explique environ 20% de la variance du QI ; si la HRV en explique une part, elle est plus petite.
 - Borne (indices choisis à l'avance : RMSSD (TD24h), HF (FT24h), SDNN (TD24h), 1re composante HRV) : aucun lien démontré ; aucun n'explique plus de 6% de la variance du QIT (6% au-delà des covariables cliniques), intervalles simultanés à 95 % ; un lien de 6% aurait été détecté 8 fois sur 10.
 - Intervalle de prédiction à 90% (prédiction conforme) : ± 21.3 points, contre ± 20.9 autour du QIT moyen.
+
+## Méthodes ajoutées après les retours des enseignants (QIT)
+- Régression linéaire · pas à pas · Clinique + HRV : MAE 10.89, gain -0.50 [-0.75 ; -0.24] (non démontré).
+- Arbre de décision · toutes · Clinique + HRV : MAE 11.14, gain -0.74 [-1.03 ; -0.46] (non démontré).
+- Kernel ridge · toutes · Clinique + HRV : MAE 10.62, gain -0.23 [-0.37 ; -0.09] (non démontré).
+- Kernel ridge multi-noyaux · toutes · Clinique + HRV : MAE 10.38, gain +0.02 [-0.30 ; 0.32] (non démontré).
+- Poids du kernel ridge multi-noyaux (médiane sur les plis) : clinique 1.00, HRV linéaire 0.00, HRV non linéaire 0.00.
+- Classement des variables par un arbre de décision (importance d'impureté et SHAP) : accord des top 5 entre plis 0.08 pour le QIT, 0.22 pour la prématurité (en tête : nl|alpha2 (DFADay)) ; 1 = toujours les mêmes variables.
+- Réglages de chaque modèle (fixés ou cherchés, et comment) : section 3 du notebook ; réglages retenus pli par pli : `results/reglages_retenus_QIT.csv`.
 
 ## Contrôle positif, classification, hypothèses
 - Contrôle positif : HRV seule → prématurité, AUC 0.79 [0.67 ; 0.93].

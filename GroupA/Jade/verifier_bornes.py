@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
+from scipy.stats import spearmanr
 
 ICI = Path(__file__).resolve().parent
 RACINE = next(d for d in [ICI, *ICI.parents] if (d / "evaluate_model.py").exists())
@@ -25,6 +26,18 @@ import outils_qit as outils  # noqa: E402
 N, M = 189, 4
 R2_SEUIL = outils.variance_detectable(N, M)
 R_SEUIL = np.sqrt(R2_SEUIL)
+
+
+def vraie_spearman(r, n=2_000_000):
+    """Vraie corrélation de Spearman du scénario « lien au seuil », celle que l'intervalle doit contenir. z (des rangs
+    centrés réduits) suit une loi uniforme et le bruit une loi normale : la corrélation de Spearman entre z et le QI
+    est un peu plus faible que r (environ 0,98 × r). Calculée une fois, sur un très grand tirage."""
+    g = np.random.default_rng(1)
+    z = g.uniform(-np.sqrt(3), np.sqrt(3), n)                 # loi uniforme de moyenne 0 et de variance 1
+    return spearmanr(z, r * z + np.sqrt(1 - r ** 2) * g.normal(size=n))[0]
+
+
+RHO_VRAI = vraie_spearman(R_SEUIL)
 
 
 def un_essai(scenario, graine):
@@ -48,11 +61,12 @@ def un_essai(scenario, graine):
     return {"faux positif brut": (b["démontré"] == "oui").any(),
             "faux positif ajusté": (b["démontré ajusté"] == "oui").any(),
             "RMSSD détecté": b.loc["RMSSD", "démontré"] == "oui",
-            "IC couvre la vraie valeur": b.loc["RMSSD", "IC bas"] <= 0.96 * R_SEUIL <= b.loc["RMSSD", "IC haut"]}
+            "IC couvre la vraie valeur": b.loc["RMSSD", "IC bas"] <= RHO_VRAI <= b.loc["RMSSD", "IC haut"]}
 
 
 if __name__ == "__main__":
-    print(f"Seuil annoncé comme détectable : {R2_SEUIL:.1%} de variance (corrélation {R_SEUIL:.2f})")
+    print(f"Seuil annoncé comme détectable : {R2_SEUIL:.1%} de variance (corrélation {R_SEUIL:.2f} ; vraie corrélation "
+          f"de Spearman dans la simulation : {RHO_VRAI:.3f})")
     for scenario, n_essais in [("aucun lien", 4000), ("lien au seuil", 2000), ("confusion", 2000)]:
         r = pd.DataFrame(Parallel(n_jobs=-1)(delayed(un_essai)(scenario, s) for s in range(n_essais))).mean()
         print(f"\n== {scenario} ({n_essais} jeux simulés)")

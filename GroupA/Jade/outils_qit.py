@@ -14,6 +14,7 @@ import re
 import unicodedata
 import warnings
 from dataclasses import dataclass
+from itertools import combinations, product
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -22,20 +23,23 @@ import pandas as pd
 from joblib import Parallel, delayed
 from lightgbm import LGBMRegressor
 from scipy.stats import norm, rankdata
-from sklearn.base import BaseEstimator, TransformerMixin, clone, is_classifier
-from sklearn.compose import ColumnTransformer
+from sklearn.base import BaseEstimator, RegressorMixin, TransformerMixin, clone, is_classifier
+from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.feature_selection import SelectFromModel
+from sklearn.feature_selection import SelectFromModel, SequentialFeatureSelector
 from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
-from sklearn.linear_model import ElasticNetCV, LogisticRegressionCV
+from sklearn.kernel_ridge import KernelRidge
+from sklearn.linear_model import ElasticNetCV, LinearRegression, LogisticRegressionCV
 from sklearn.metrics import (balanced_accuracy_score, cohen_kappa_score, mean_absolute_error, mean_squared_error,
                              r2_score, recall_score, roc_auc_score)
-from sklearn.model_selection import KFold, RandomizedSearchCV, StratifiedKFold
+from sklearn.metrics.pairwise import rbf_kernel
+from sklearn.model_selection import GridSearchCV, KFold, RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import QuantileTransformer, StandardScaler
 from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from xgboost import XGBRegressor
 
 from evaluate_model import bootstrap, norm_id, run_cv
@@ -56,6 +60,7 @@ MIN_CAS_RARES = 5                 # covariable binaire retirée si une classe a 
 SEUIL_CORR = 0.95                 # une seule variable gardée par groupe corrélé au-delà de ce seuil
 TOP_K = 30                        # variables gardées par la sélection « sél. RF »
 VARIANCE_PCA = 0.90               # part de variance gardée par la sélection « PCA 90 % »
+TOL_PAS_A_PAS = 0.1               # sélection pas à pas : une variable entre si la MAE interne baisse d'au moins 0,1 point
 K_INTERNE = 5                     # plis internes pour régler les modèles
 
 # ===================================================================================== Langue
@@ -70,6 +75,14 @@ _EN = {   # noms des colonnes de résultats (et oui/non) en anglais
     "IC haut ajusté": "adjusted CI high", "variance max": "max variance", "variance max ajusté": "adjusted max variance",
     "démontré": "demonstrated", "démontré ajusté": "adjusted demonstrated", "vrai": "true", "moyenne": "mean",
     "oui": "yes", "non": "no",
+    "importance (impureté)": "importance (impurity)", "SHAP (moyenne |valeur|)": "SHAP (mean |value|)",
+    "dans le top 5 (part des plis)": "in the top 5 (share of folds)",
+    "poids clinique": "weight clinical", "poids HRV linéaire": "weight linear HRV",
+    "poids HRV non linéaire": "weight non-linear HRV", "composantes PCA": "PCA components",
+    "accord": "agreement", "plis": "folds", "au-dessus du hasard": "above chance", "accord hasard": "chance agreement",
+    "seuil SHAP": "SHAP threshold", "seuil importance": "importance threshold", "seuil effet": "effect threshold",
+    "seuil accord": "agreement threshold",
+    "mélanges": "shuffles", "lecture": "reading",
 }
 
 
@@ -191,7 +204,9 @@ class Sources:
 
 
 def charger(dossier, fichiers, lignes_entete_wppsi=2):
-    """Lit les 3 fichiers et garde, pour le WPPSI, les enfants qui ont tous leurs scores (comme pulisci_righe.py)."""
+    """Lit les 3 fichiers et garde, pour le WPPSI, les enfants qui ont leurs 4 scores (même règle que le script de
+    nettoyage de l'équipe, GroupA/clean_data.py). Un score hors de l'échelle du WPPSI-III (40 à 160) compte comme
+    manquant ; un enfant avec deux QIT différents dans le fichier est retiré."""
     lin = _avec_id(lire_csv(dossier / fichiers["lin"]), COL_ID_HRV, fichiers["lin"])
     nl = _avec_id(lire_csv(dossier / fichiers["nl"]), COL_ID_HRV, fichiers["nl"])
     wppsi = _avec_id(lire_csv(dossier / fichiers["wppsi"], lignes_entete_wppsi), COL_ID_WPPSI, fichiers["wppsi"])
@@ -359,6 +374,8 @@ class FiltreCorrelation(BaseEstimator, TransformerMixin):
         self.seuil = seuil
 
     def fit(self, X, y=None):
+        if hasattr(X, "columns"):                   # noms gardés quand la préparation sort des tableaux pandas
+            self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         X = np.asarray(X, dtype=float)
         self.n_features_in_ = X.shape[1]
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -374,8 +391,9 @@ class FiltreCorrelation(BaseEstimator, TransformerMixin):
         return np.asarray(X, dtype=float)[:, self.garder_]
 
     def get_feature_names_out(self, input_features=None):
-        noms = input_features if input_features is not None else [f"x{i}" for i in range(self.n_features_in_)]
-        return np.asarray(noms, dtype=object)[self.garder_]
+        if input_features is None:
+            input_features = getattr(self, "feature_names_in_", [f"x{i}" for i in range(self.n_features_in_)])
+        return np.asarray(input_features, dtype=object)[self.garder_]
 
 
 def faire_preprocesseur(colonnes):
@@ -400,10 +418,54 @@ SELECTIONS = {
                                                              random_state=0, n_jobs=1),
                                        max_features=lambda X: min(TOP_K, X.shape[1]), threshold=-np.inf),
     "PCA 90 %": lambda: PCA(n_components=VARIANCE_PCA, svd_solver="full"),
+    # méthode « wrapper » : on ajoute une à une les variables qui font le plus baisser la MAE d'une régression
+    # linéaire en CV interne, et on s'arrête quand plus aucune ne la fait baisser d'au moins TOL_PAS_A_PAS
+    "pas à pas": lambda: SequentialFeatureSelector(LinearRegression(), n_features_to_select="auto", tol=TOL_PAS_A_PAS,
+                                                   direction="forward", scoring="neg_mean_absolute_error",
+                                                   cv=KFold(K_INTERNE, shuffle=True, random_state=0), n_jobs=1),
 }
 # noms anglais des mêmes sélections (notebook anglais)
-SELECTIONS.update({"all": SELECTIONS["toutes"], "RF selection": SELECTIONS["sél. RF"], "PCA 90%": SELECTIONS["PCA 90 %"]})
+SELECTIONS.update({"all": SELECTIONS["toutes"], "RF selection": SELECTIONS["sél. RF"], "PCA 90%": SELECTIONS["PCA 90 %"],
+                   "stepwise": SELECTIONS["pas à pas"]})
 LOGISTIQUE = ("Logistique", "Logistic")
+
+
+class RidgeMultiNoyaux(BaseEstimator, RegressorMixin):
+    """Kernel ridge regression à plusieurs noyaux (multiple kernel ridge regression).
+
+    Un noyau gaussien par groupe de variables (clinique, HRV linéaire, HRV non linéaire), combinés avec des poids :
+    K = Σ poids_g × K_g. La largeur de chaque noyau suit la règle « scale » de scikit-learn (1 / (nombre de variables ×
+    variance)). Les poids et la pénalité `alpha` ne sont pas appris ici : ils sont choisis par validation croisée
+    interne sur une grille (voir ESPACES). Le QI est centré sur la moyenne d'entraînement (le modèle n'a pas de
+    constante). Les poids retenus disent sur quel groupe de variables le modèle s'appuie."""
+
+    GROUPES = ("clin|", "lin|", "nl|")
+
+    def __init__(self, poids=(1 / 3, 1 / 3, 1 / 3), alpha=1.0):
+        self.poids = poids
+        self.alpha = alpha
+
+    def _noyau(self, A, B):
+        K = np.zeros((len(A), len(B)))
+        for w, cols, gamma in zip(self.poids, self.colonnes_, self.gammas_):
+            if w > 0 and cols:
+                K += w * rbf_kernel(A[cols].to_numpy(float), B[cols].to_numpy(float), gamma=gamma)
+        return K
+
+    def fit(self, X, y):
+        if not hasattr(X, "columns"):
+            raise TypeError("RidgeMultiNoyaux a besoin des noms de colonnes (préparation en sortie pandas).")
+        self.colonnes_ = [[c for c in X.columns if c.startswith(p)] for p in self.GROUPES]
+        self.gammas_ = [1.0 / (len(c) * X[c].to_numpy(float).var()) if c and X[c].to_numpy(float).var() > 0 else 1.0
+                        for c in self.colonnes_]
+        self.X_ = X.copy()
+        y = np.asarray(y, dtype=float)
+        self.moyenne_ = y.mean()
+        self.coef_ = np.linalg.solve(self._noyau(X, X) + self.alpha * np.eye(len(X)), y - self.moyenne_)
+        return self
+
+    def predict(self, X):
+        return self._noyau(X, self.X_) @ self.coef_ + self.moyenne_
 
 # ===================================================================================== 3. Models
 ESPACES = {   # plan du mercredi
@@ -413,29 +475,60 @@ ESPACES = {   # plan du mercredi
                  "min_child_samples": [10, 20], "reg_alpha": [0, 0.1, 1], "reg_lambda": [0, 1, 10]},
     "XGBoost": {"n_estimators": [100, 300], "learning_rate": [0.01, 0.05, 0.1], "max_depth": [3, 5, 7],
                 "min_child_weight": [1, 5], "reg_alpha": [0, 0.1, 1], "reg_lambda": [1, 10], "subsample": [0.8, 1.0]},
-    "SVR": {"C": [0.1, 1, 10, 100], "epsilon": [0.01, 0.1, 1], "kernel": ["rbf", "linear"], "gamma": ["scale", "auto"]},
+    # gamma ne sert qu'au noyau rbf : deux espaces séparés, sinon des combinaisons « linear » en double
+    "SVR": [{"kernel": ["rbf"], "C": [0.1, 1, 10, 100], "epsilon": [0.01, 0.1, 1], "gamma": ["scale", "auto"]},
+            {"kernel": ["linear"], "C": [0.1, 1, 10, 100], "epsilon": [0.01, 0.1, 1]}],
+    # modèles ajoutés après les retours des enseignants (rapides : grille complète)
+    "Arbre de décision": {"max_depth": [2, 3, 4, 5, None], "min_samples_leaf": [5, 10, 20, 30]},
+    "Kernel ridge": [{"regressor__kernel": ["rbf", "laplacian"], "regressor__alpha": [0.01, 0.1, 1, 10, 100],
+                      "regressor__gamma": [0.001, 0.005, 0.01, 0.05]},
+                     {"regressor__kernel": ["linear"], "regressor__alpha": [0.01, 0.1, 1, 10, 100]}],
+    "Kernel ridge multi-noyaux": {"poids": [p for p in product([0, 0.25, 0.5, 0.75, 1], repeat=3) if sum(p) == 1],
+                                  "alpha": [0.01, 0.1, 1, 10]},
 }
+ESPACES["Arbre de classification"] = ESPACES["Arbre de décision"]
 BASES = {     # n_jobs=1 : le parallélisme se fait sur les plis
     "Random Forest": lambda: RandomForestRegressor(random_state=0, n_jobs=1),
     "LightGBM": lambda: LGBMRegressor(colsample_bytree=0.5, subsample=0.8, subsample_freq=1, random_state=0,
                                       n_jobs=1, verbose=-1),
     "XGBoost": lambda: XGBRegressor(colsample_bytree=0.5, random_state=0, n_jobs=1),
     "SVR": lambda: SVR(),
+    "Arbre de décision": lambda: DecisionTreeRegressor(random_state=0),
+    "Arbre de classification": lambda: DecisionTreeClassifier(class_weight="balanced", random_state=0),
+    # le kernel ridge n'a pas de constante : le QI est centré-réduit dans chaque pli (sur les enfants d'entraînement)
+    "Kernel ridge": lambda: TransformedTargetRegressor(regressor=KernelRidge(), transformer=StandardScaler()),
+    "Kernel ridge multi-noyaux": lambda: RidgeMultiNoyaux(),
 }
+GRILLE_COMPLETE = {"Arbre de décision", "Arbre de classification", "Kernel ridge", "Kernel ridge multi-noyaux"}
+ALIAS_MODELES = {"Linear regression": "Régression linéaire", "Decision tree": "Arbre de décision",
+                 "Multiple kernel ridge": "Kernel ridge multi-noyaux", "Logistic": "Logistique"}
+ALIAS_INVERSE = {v: k for k, v in ALIAS_MODELES.items()}
 
 
 def faire_modele(nom, n_iter):
-    """Modèle réglé dans une boucle interne à 5 plis, sur les seuls enfants d'entraînement."""
+    """Modèle réglé dans une boucle interne à 5 plis, sur les seuls enfants d'entraînement.
+    Modèles du plan (RF, LightGBM, XGBoost, SVR) : recherche aléatoire de n_iter combinaisons, car ils sont lents.
+    Modèles rapides ajoutés ensuite (arbre, kernel ridge, multi-noyaux) : toutes les combinaisons de la grille."""
+    nom = ALIAS_MODELES.get(nom, nom)
     interne = KFold(K_INTERNE, shuffle=True, random_state=0)
     if nom == "Elastic Net":      # ElasticNetCV parcourt 30 pénalités × 5 mélanges L1/L2 d'un coup
         return ElasticNetCV(l1_ratio=[0.1, 0.3, 0.5, 0.7, 0.9], alphas=30, eps=1e-2, cv=interne, max_iter=10_000,
                             selection="random", random_state=0)
+    if nom == "Régression linéaire":   # pas d'hyperparamètre ; sert avec la sélection « pas à pas »
+        return LinearRegression()
+    if nom == "Arbre de classification":
+        return GridSearchCV(BASES[nom](), ESPACES[nom], cv=StratifiedKFold(K_INTERNE, shuffle=True, random_state=0),
+                            scoring="roc_auc")
+    if nom in GRILLE_COMPLETE:
+        return GridSearchCV(BASES[nom](), ESPACES[nom], cv=interne, scoring="neg_mean_absolute_error")
     return RandomizedSearchCV(BASES[nom](), ESPACES[nom], n_iter=n_iter, cv=interne,
                               scoring="neg_mean_absolute_error", random_state=0)
 
 
 def _classification(modele):
-    return modele in LOGISTIQUE if isinstance(modele, str) else is_classifier(modele)
+    if isinstance(modele, str):
+        return modele in LOGISTIQUE or ALIAS_MODELES.get(modele, modele) == "Arbre de classification"
+    return is_classifier(modele)
 
 
 def faire_pipeline(colonnes, modele="Elastic Net", selection="toutes", n_iter=12):
@@ -449,31 +542,310 @@ def faire_pipeline(colonnes, modele="Elastic Net", selection="toutes", n_iter=12
         return Pipeline([("prep", faire_preprocesseur(colonnes)),
                          ("modele", LogisticRegressionCV(Cs=10, cv=StratifiedKFold(3, shuffle=True, random_state=0),
                                                          scoring="roc_auc", class_weight="balanced", max_iter=5_000))])
-    return Pipeline([("prep", faire_preprocesseur(colonnes)), ("selection", SELECTIONS[selection]()),
-                     ("modele", faire_modele(modele, n_iter))])
+    prep = faire_preprocesseur(colonnes)
+    if ALIAS_MODELES.get(modele, modele) == "Kernel ridge multi-noyaux":
+        if SELECTIONS[selection] is not SELECTIONS["toutes"]:
+            raise ValueError("Kernel ridge multi-noyaux : sélection « toutes » seulement (il a besoin des groupes).")
+        prep.set_output(transform="pandas")       # garde les noms de colonnes, donc les groupes clin| lin| nl|
+    return Pipeline([("prep", prep), ("selection", SELECTIONS[selection]()), ("modele", faire_modele(modele, n_iter))])
 
 
 # ===================================================================================== 4. Evaluation
+def _valeur(v):
+    """Réglage retenu, lisible : None devient « None » (sinon pandas le prendrait pour une valeur manquante)."""
+    if v is None:
+        return "None"
+    return v.item() if hasattr(v, "item") else v
+
+
+def _reglages_retenus(pipe):
+    """Les réglages choisis par la recherche interne de ce pli (et le nombre de variables gardées)."""
+    m, r = pipe.named_steps["modele"], {}
+    if hasattr(m, "best_params_"):                         # RandomizedSearchCV, GridSearchCV
+        for k, v in m.best_params_.items():
+            k = k.removeprefix("regressor__")
+            if k == "poids":                                # multi-noyaux : un poids par groupe de variables
+                r.update({n: w for n, w in zip(["poids clinique", "poids HRV linéaire", "poids HRV non linéaire"], v)})
+            else:
+                r[k] = _valeur(v)
+    elif isinstance(m, ElasticNetCV):
+        r.update(alpha=float(m.alpha_), l1_ratio=float(m.l1_ratio_))
+    elif isinstance(m, LogisticRegressionCV):
+        r["C"] = float(m.C_[0])
+    sel = pipe.named_steps.get("selection")
+    if isinstance(sel, PCA):
+        r["composantes PCA"] = int(sel.n_components_)
+    elif isinstance(sel, SequentialFeatureSelector):
+        r["variables"] = tuple(pipe.named_steps["prep"].get_feature_names_out()[sel.get_support()])
+    return r
+
+
 def _un_pli(Xd, y, tr, te, modele, selection, n_iter):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         pipe = faire_pipeline(list(Xd.columns), modele, selection, n_iter).fit(Xd.loc[tr], y.loc[tr])
-        return pipe.predict_proba(Xd.loc[te])[:, 1] if _classification(modele) else np.ravel(pipe.predict(Xd.loc[te]))
+        pred = pipe.predict_proba(Xd.loc[te])[:, 1] if _classification(modele) else np.ravel(pipe.predict(Xd.loc[te]))
+        return pred, _reglages_retenus(pipe)
 
 
-def predictions_croisees(Xd, y, plis, modele="Elastic Net", selection="toutes", n_iter=12, n_jobs=-1):
+def predictions_croisees(Xd, y, plis, modele="Elastic Net", selection="toutes", n_iter=12, n_jobs=-1,
+                         nom=None, reglages=None, name=None, settings=None):
     """Prédictions hors pli : chaque enfant est prédit par un modèle qui ne l'a pas vu.
     y : une cible (Series) ou plusieurs (DataFrame, un modèle par cible). Renvoie, par cible, un tableau avec une
     ligne par répétition et une colonne par enfant. modele="Logistique" (ou un classifieur scikit-learn) :
-    probabilité de la classe 1. `modele` peut être un nom ou un modèle scikit-learn (voir faire_pipeline)."""
+    probabilité de la classe 1. `modele` peut être un nom ou un modèle scikit-learn (voir faire_pipeline).
+    reglages : une liste où ajouter, pour chaque pli et chaque cible, les réglages retenus (nom = nom de l'expérience).
+    name et settings : les mêmes, en anglais (notebook anglais)."""
+    nom = nom or name
+    reglages = reglages if reglages is not None else settings
     Y = y.to_frame() if isinstance(y, pd.Series) else y
-    taches = [(c, r, tr, te) for c in Y.columns for r, _, tr, te in plis]
+    taches = [(c, r, k, tr, te) for c in Y.columns for r, k, tr, te in plis]
     sorties = Parallel(n_jobs=n_jobs)(delayed(_un_pli)(Xd, Y[c], tr, te, modele, selection, n_iter)
-                                      for c, _, tr, te in taches)
+                                      for c, _, _, tr, te in taches)
     P = {c: pd.DataFrame(np.nan, index=sorted({p[0] for p in plis}), columns=Y.index) for c in Y.columns}
-    for (c, r, _, te), s in zip(taches, sorties):
-        P[c].loc[r, te] = s
+    for (c, r, k, _, te), (pred, regl) in zip(taches, sorties):
+        P[c].loc[r, te] = pred
+        if reglages is not None:
+            reglages.append({"modèle": nom or str(modele), "cible": c, "répétition": r, "pli": k, **regl})
     return next(iter(P.values())) if isinstance(y, pd.Series) else P
+
+
+def poids_multi_noyaux(reglages, cible="QIT"):
+    """Poids médians (sur les plis) donnés à chaque groupe de variables par le kernel ridge multi-noyaux, ou None."""
+    t = pd.DataFrame([r for r in reglages if r["cible"] == cible and "poids clinique" in r])
+    if t.empty:
+        return None
+    return {_t(n, en): float(t[f"poids {n}"].median()) for n, en in
+            [("clinique", "clinical"), ("HRV linéaire", "linear HRV"), ("HRV non linéaire", "non-linear HRV")]}
+
+
+def _non_defaut(est):
+    """Paramètres d'un modèle qui diffèrent des valeurs par défaut de sa bibliothèque."""
+    try:
+        defaut = type(est)().get_params(deep=False)
+    except TypeError:          # un paramètre est obligatoire (modèle imbriqué) : défauts lus dans la signature
+        import inspect
+        params = inspect.signature(type(est).__init__).parameters
+        defaut = {k: p.default for k, p in params.items() if p.default is not inspect.Parameter.empty}
+        obligatoires = {k for k, p in params.items() if k != "self" and p.default is inspect.Parameter.empty
+                        and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)}
+        return {k: v for k, v in est.get_params(deep=False).items()
+                if k in obligatoires or (k in defaut and repr(v) != repr(defaut[k]))}
+    return {k: v for k, v in est.get_params(deep=False).items() if k in defaut and repr(v) != repr(defaut[k])}
+
+
+def _ecarts(objet):
+    """Texte « ce qui diffère des valeurs par défaut » pour une étape de préparation."""
+    if isinstance(objet, FiltreCorrelation):
+        return f"seuil={objet.seuil}"
+    if isinstance(objet, (KFold, StratifiedKFold)):
+        return f"n_splits={objet.n_splits}, shuffle={objet.shuffle}, random_state={objet.random_state}"
+    return ", ".join(f"{k}={_court(v)}" for k, v in _non_defaut(objet).items()) or _t("rien", "nothing")
+
+
+def _court(v):
+    if isinstance(v, (KFold, StratifiedKFold)):
+        return f"{type(v).__name__}({v.n_splits}" + (", shuffle=True" if v.shuffle else "") + ")"
+    if isinstance(v, BaseEstimator):               # modèle imbriqué : son nom et ce qui diffère de ses défauts
+        ecarts = ", ".join(f"{k}={_court(x)}" for k, x in _non_defaut(v).items())
+        return f"{type(v).__name__}({ecarts})"
+    if callable(v):                                # max_features de la sélection par forêt
+        return _t(f"min({TOP_K}, nombre de variables)", f"min({TOP_K}, number of variables)")
+    if isinstance(v, list) and len(v) > 6:
+        return f"[{v[0]} … {v[-1]}] ({len(v)} valeurs)"
+    return repr(v)
+
+
+def _espace_texte(espace):
+    if isinstance(espace, list):
+        return " ; ".join(_espace_texte(e) for e in espace)
+    return ", ".join(f"{k.removeprefix('regressor__')} ∈ {_court(v)}" for k, v in espace.items())
+
+
+def _nb_combinaisons(espace):
+    if isinstance(espace, list):
+        return sum(_nb_combinaisons(e) for e in espace)
+    return int(np.prod([len(v) for v in espace.values()]))
+
+
+POURQUOI = {   # pourquoi ces valeurs fixées : (français, anglais)
+    "Elastic Net": ("chemin complet de 30 pénalités calculé d'un coup (rapide, rien n'est tiré au hasard) ; "
+                    "selection=random converge plus vite avec beaucoup de variables corrélées",
+                    "full path of 30 penalties computed at once (fast, nothing random); selection=random "
+                    "converges faster with many correlated variables"),
+    "Random Forest": ("n_jobs=1 : le calcul parallèle se fait sur les plis ; random_state : résultats reproductibles",
+                      "n_jobs=1: parallel computing is done over the folds; random_state: reproducible results"),
+    "LightGBM": ("chaque arbre ne voit que 50 % des variables et 80 % des enfants : limite le surapprentissage avec "
+                 "~150 enfants (fixé à l'avance, pas réglé)",
+                 "each tree sees only 50% of the variables and 80% of the children: limits overfitting with "
+                 "~150 children (fixed in advance, not tuned)"),
+    "XGBoost": ("chaque arbre ne voit que 50 % des variables : même raison que LightGBM",
+                "each tree sees only 50% of the variables: same reason as LightGBM"),
+    "SVR": ("valeurs par défaut, sauf les réglages cherchés", "defaults, except the tuned settings"),
+    "Régression linéaire": ("aucun hyperparamètre ; les variables sont choisies par la sélection pas à pas (wrapper)",
+                            "no hyperparameter; variables are chosen by stepwise selection (wrapper)"),
+    "Arbre de décision": ("random_state : résultats reproductibles", "random_state: reproducible results"),
+    "Kernel ridge": ("le kernel ridge n'a pas de constante : le QI est centré-réduit dans chaque pli "
+                     "(TransformedTargetRegressor)",
+                     "kernel ridge has no intercept: IQ is standardised within each fold (TransformedTargetRegressor)"),
+    "Kernel ridge multi-noyaux": ("un noyau gaussien par groupe (clinique, HRV linéaire, HRV non linéaire), largeur "
+                                  "« scale » ; QI centré dans chaque pli",
+                                  "one Gaussian kernel per group (clinical, linear HRV, non-linear HRV), 'scale' "
+                                  "width; IQ centred within each fold"),
+    "Logistique": ("class_weight=balanced : la classe rare compte autant ; max_iter : convergence",
+                   "class_weight=balanced: the rare class counts as much; max_iter: convergence"),
+}
+
+
+def tableau_reglages(n_iter):
+    """Pour chaque modèle : ce qui est fixé (différent des valeurs par défaut), ce qui est cherché et comment.
+    Tout ce qui n'est pas listé garde la valeur par défaut de la bibliothèque."""
+    lignes = []
+    for nom in ["Elastic Net", "Random Forest", "LightGBM", "XGBoost", "SVR", "Régression linéaire",
+                "Arbre de décision", "Kernel ridge", "Kernel ridge multi-noyaux", "Logistique"]:
+        if nom == "Logistique":
+            m = faire_pipeline(["x"], "Logistique").named_steps["modele"]
+            fixes = {k: v for k, v in _non_defaut(m).items() if k not in ("Cs",)}
+            cherche = _t("C ∈ 10 valeurs de 1e-4 à 1e4", "C ∈ 10 values from 1e-4 to 1e4")
+            comment = _t("LogisticRegressionCV : les 10 valeurs, CV interne 3 plis, critère AUC",
+                         "LogisticRegressionCV: all 10 values, inner 3-fold CV, AUC criterion")
+        else:
+            m = faire_modele(nom, n_iter)
+            if isinstance(m, ElasticNetCV):
+                fixes = {k: v for k, v in _non_defaut(m).items() if k not in ("l1_ratio", "alphas", "eps", "cv")}
+                cherche = _t("alpha ∈ 30 valeurs (de alpha_max, qui annule tout, à alpha_max / 100) ; "
+                             "l1_ratio ∈ [0.1, 0.3, 0.5, 0.7, 0.9]",
+                             "alpha ∈ 30 values (from alpha_max, which zeroes everything, to alpha_max / 100); "
+                             "l1_ratio ∈ [0.1, 0.3, 0.5, 0.7, 0.9]")
+                comment = _t("ElasticNetCV : les 150 combinaisons, CV interne 5 plis, critère MSE",
+                             "ElasticNetCV: all 150 combinations, inner 5-fold CV, MSE criterion")
+            elif isinstance(m, (RandomizedSearchCV, GridSearchCV)):
+                base = m.estimator
+                fixes = _non_defaut(base)
+                if isinstance(base, TransformedTargetRegressor):
+                    fixes = {"regressor": "KernelRidge", "transformer": "StandardScaler"}
+                espace = m.param_distributions if isinstance(m, RandomizedSearchCV) else m.param_grid
+                cherche = _espace_texte(espace)
+                n = _nb_combinaisons(espace)
+                comment = (_t(f"recherche aléatoire : {n_iter} combinaisons sur {n}, CV interne 5 plis, critère MAE",
+                              f"random search: {n_iter} combinations out of {n}, inner 5-fold CV, MAE criterion")
+                           if isinstance(m, RandomizedSearchCV) else
+                           _t(f"grille complète : les {n} combinaisons, CV interne 5 plis, critère MAE",
+                              f"full grid: all {n} combinations, inner 5-fold CV, MAE criterion"))
+            else:
+                fixes, cherche, comment = {}, _t("aucun", "none"), _t("pas de réglage", "no tuning")
+        lignes.append({_t("modèle", "model"): ALIAS_INVERSE.get(nom, nom) if LANGUE == "en" else nom,
+                       _t("fixé (≠ défaut)", "fixed (≠ default)"):
+                           ", ".join(f"{k}={_court(v)}" for k, v in fixes.items()) or _t("rien", "nothing"),
+                       _t("cherché (valeurs essayées)", "tuned (values tried)"): cherche,
+                       _t("comment", "how"): comment,
+                       _t("pourquoi ces valeurs fixées", "why these fixed values"): _t(*POURQUOI[nom])})
+    return pd.DataFrame(lignes).set_index(_t("modèle", "model"))
+
+
+def tableau_preparation():
+    """Préparation des variables, sélections, validation croisée et outils d'analyse : ce qui diffère des valeurs par
+    défaut de scikit-learn (tout le reste est par défaut). Aucun de ces réglages n'est cherché : ils sont fixés à
+    l'avance, avant de voir les résultats."""
+    hrv = faire_preprocesseur(["lin|a", "clin|b"]).transformers[0][1]          # étapes HRV
+    clin = faire_preprocesseur(["lin|a", "clin|b"]).transformers[1][1]         # étapes cliniques
+    etapes = [
+        (_t("HRV : trous", "HRV: gaps"), hrv.named_steps["imputation"],
+         _t("la médiane résiste mieux aux valeurs extrêmes que la moyenne (indices très asymétriques)",
+            "the median resists extreme values better than the mean (very skewed indices)")),
+        (_t("HRV : variables redondantes", "HRV: redundant variables"), hrv.named_steps["correlation"],
+         _t("écrit pour le projet (pas de valeur par défaut) : une variable par groupe corrélé à plus de 0,95 (Spearman)",
+            "written for the project (no default): one variable per group correlated above 0.95 (Spearman)")),
+        (_t("HRV : loi normale", "HRV: normal distribution"), hrv.named_steps["loi_normale"],
+         _t("loi normale : adaptée aux modèles linéaires ; 50 quantiles car ~150 enfants d'entraînement (le défaut, "
+            "1000, dépasse le nombre d'enfants)",
+            "normal distribution: suited to linear models; 50 quantiles because ~150 training children (the default, "
+            "1000, exceeds the number of children)")),
+        (_t("Clinique : trous", "Clinical: gaps"), clin.named_steps["imputation"],
+         _t("covariables 0/1 : la valeur la plus fréquente reste 0 ou 1", "0/1 covariates: the most frequent value stays 0 or 1")),
+        (_t("Clinique : mise à l'échelle", "Clinical: scaling"), clin.named_steps["echelle"],
+         _t("valeurs par défaut", "defaults")),
+        (_t("Sélection « sél. RF »", "Selection 'RF selection'"), SELECTIONS["sél. RF"](),
+         _t("les 30 variables les plus importantes d'une forêt régularisée (feuilles d'au moins 5 enfants), conseil du prof",
+            "the 30 most important variables of a regularised forest (leaves of at least 5 children), supervisor's advice")),
+        (_t("Sélection « PCA 90 % »", "Selection 'PCA 90%'"), SELECTIONS["PCA 90 %"](),
+         _t("garder 90 % de la variance (conseil du prof) ; calcul exact (svd_solver=full)",
+            "keep 90% of the variance (supervisor's advice); exact computation (svd_solver=full)")),
+        (_t("Sélection « pas à pas » (wrapper)", "Selection 'stepwise' (wrapper)"), SELECTIONS["pas à pas"](),
+         _t("s'arrête quand plus aucune variable ne fait baisser la MAE interne d'au moins 0,1 point ; même critère "
+            "(MAE) que le reste du projet", "stops when no variable lowers the inner MAE by at least 0.1 point; same "
+            "criterion (MAE) as the rest of the project")),
+        (_t("CV interne (réglages)", "Inner CV (tuning)"), KFold(K_INTERNE, shuffle=True, random_state=0),
+         _t("mélangée avec une graine fixe : mêmes plis internes à chaque lancement",
+            "shuffled with a fixed seed: same inner folds at each run")),
+        (_t("Classement des variables (9) : arbre", "Variable ranking (9): tree"), faire_modele("Arbre de classification", 0),
+         _t("prématurité : classes équilibrées et critère AUC, comme la logistique ; QIT : même arbre que dans "
+            "l'évaluation (critère MAE)", "prematurity: balanced classes and AUC criterion, like the logistic model; "
+            "FSIQ: same tree as in the evaluation (MAE criterion)")),
+    ]
+    lignes = [{_t("étape", "step"): nom, _t("objet scikit-learn", "scikit-learn object"): type(objet).__name__,
+               _t("fixé (≠ défaut)", "fixed (≠ default)"): _ecarts(objet), _t("pourquoi", "why"): pourquoi}
+              for nom, objet, pourquoi in etapes]
+    lignes += [
+        {_t("étape", "step"): _t("Plis d'évaluation (10 × 5)", "Evaluation folds (10 × 5)"),
+         _t("objet scikit-learn", "scikit-learn object"): "StratifiedKFold",
+         _t("fixé (≠ défaut)", "fixed (≠ default)"): "n_splits=5, shuffle=True, random_state=42 + " + _t("répétition", "repeat"),
+         _t("pourquoi", "why"): _t("stratifiés sur les quintiles du QIT : chaque pli a des QI bas et hauts ; graines fixes : "
+                                   "plis identiques à chaque lancement (folds.csv)",
+                                   "stratified on FSIQ quintiles: each fold has low and high IQs; fixed seeds: identical "
+                                   "folds at each run (folds.csv)")},
+        {_t("étape", "step"): _t("Importance par permutation (9)", "Permutation importance (9)"),
+         _t("objet scikit-learn", "scikit-learn object"): "permutation_importance",
+         _t("fixé (≠ défaut)", "fixed (≠ default)"): "scoring='roc_auc', random_state=0",
+         _t("pourquoi", "why"): _t("baisse de l'AUC, la mesure du contrôle positif ; n_repeats=5 (défaut)",
+                                   "drop in AUC, the measure of the positive control; n_repeats=5 (default)")},
+        {_t("étape", "step"): _t("IC 95 % des gains (4, 7)", "95% CI of the gains (4, 7)"),
+         _t("objet scikit-learn", "scikit-learn object"): _t("bootstrap (evaluate_model.py)", "bootstrap (evaluate_model.py)"),
+         _t("fixé (≠ défaut)", "fixed (≠ default)"): _t("2000 tirages, graine 0", "2000 draws, seed 0"),
+         _t("pourquoi", "why"): _t("enfants tirés avec remise ; les mêmes tirages pour tous les modèles",
+                                   "children drawn with replacement; the same draws for all models")},
+        {_t("étape", "step"): _t("IC 95 % de l'AUC (5, 6)", "95% CI of the AUC (5, 6)"),
+         _t("objet scikit-learn", "scikit-learn object"): _t("bootstrap (outils_qit.py)", "bootstrap (outils_qit.py)"),
+         _t("fixé (≠ défaut)", "fixed (≠ default)"): _t("2000 tirages, graine 0", "2000 draws, seed 0"),
+         _t("pourquoi", "why"): _t("même principe, sur la probabilité prédite moyenne des répétitions",
+                                   "same principle, on the predicted probability averaged over the repeats")},
+        {_t("étape", "step"): _t("IC de la borne (4.5)", "CI of the bound (4.5)"),
+         _t("objet scikit-learn", "scikit-learn object"): _t("transformation de Fisher", "Fisher transformation"),
+         _t("fixé (≠ défaut)", "fixed (≠ default)"): _t("erreur type de Bonett et Wright, Bonferroni sur les indices",
+                                                        "Bonett–Wright standard error, Bonferroni over the indices"),
+         _t("pourquoi", "why"): _t("le bootstrap donnait trop de faux liens (6,3 % au lieu de 5 % au plus) ; celui-ci "
+                                   "est vérifié sur 8 000 jeux simulés (verifier_bornes.py)",
+                                   "the bootstrap gave too many false links (6.3% instead of 5% at most); this one is "
+                                   "checked on 8,000 simulated datasets (verifier_bornes.py)")},
+    ]
+    return pd.DataFrame(lignes).set_index(_t("étape", "step"))
+
+
+def resume_reglages(reglages, cible="QIT"):
+    """Réglages retenus dans les plis pour une cible : valeur la plus fréquente (et combien de plis), ou médiane
+    [min ; max] pour un réglage continu ; pour la sélection pas à pas, les variables les plus souvent choisies."""
+    t = pd.DataFrame([r for r in reglages if r["cible"] == cible])
+    lignes = []
+    for modele, g in t.groupby("modèle", sort=False):
+        n = len(g)
+        for p in [c for c in g.columns if c not in ("modèle", "cible", "répétition", "pli") and g[c].notna().any()]:
+            v = g[p].dropna()
+            if p == "variables":
+                tailles = v.map(len)
+                compte = pd.Series([x for noms in v for x in noms]).value_counts()
+                texte = (_t(f"{tailles.median():.0f} variables [{tailles.min()} ; {tailles.max()}] ; les plus choisies : ",
+                            f"{tailles.median():.0f} variables [{tailles.min()}, {tailles.max()}]; most chosen: ")
+                         + ", ".join(f"{nom} ({k}/{n})" for nom, k in compte.head(5).items()))
+            elif pd.api.types.is_numeric_dtype(v) and (v.nunique() > 5 or (v - v.round(3)).abs().max() > 1e-9):
+                # réglage continu (alpha d'Elastic Net, C de la logistique) : médiane et étendue
+                texte = _t(f"médiane {v.median():.3g} [{v.min():.3g} ; {v.max():.3g}]",
+                           f"median {v.median():.3g} [{v.min():.3g}, {v.max():.3g}]")
+            else:
+                texte = ", ".join(f"{val} ({k}/{n})" for val, k in
+                                  v.map(lambda x: f"{x:g}" if isinstance(x, float) else str(x)).value_counts().items())
+            lignes.append({_t("modèle", "model"): modele, _t("réglage", "setting"): _k(p),
+                           _t("valeurs retenues (nombre de plis)", "values chosen (number of folds)"): texte})
+    return pd.DataFrame(lignes)
 
 
 def ecrire_predictions(P, plis, fichier_plis, fichier_cohorte, fichier, repetitions):
@@ -513,11 +885,34 @@ def ic(bas, haut, chiffres=2):
     return _t(f"[{bas:.{chiffres}f} ; {haut:.{chiffres}f}]", f"[{bas:.{chiffres}f}, {haut:.{chiffres}f}]")
 
 
+def tableau_markdown(t):
+    """Tableau pandas -> tableau Markdown, lisible sur GitHub (les .csv du dépôt ne sont jamais suivis par git)."""
+    if t.index.name is not None or isinstance(t.index, pd.MultiIndex):
+        t = t.reset_index()
+
+    def ligne(valeurs):
+        return "| " + " | ".join(str(v).replace("|", "\\|") for v in valeurs) + " |"
+
+    return "\n".join([ligne(t.columns), "|" + "---|" * t.shape[1], *(ligne(v) for v in t.itertuples(index=False))])
+
+
+def verdict_gain(bas, haut):
+    """Lecture d'un gain sur la moyenne à partir de son IC 95 % : démontré (tout l'IC > 0), moins bien que la moyenne
+    (tout l'IC < 0), ou non démontré (l'IC contient 0)."""
+    if bas > 0:
+        return _t("démontré", "demonstrated")
+    if haut < 0:
+        return _t("moins bien que la moyenne", "worse than the mean")
+    return _t("non démontré", "not demonstrated")
+
+
 def tableau_resultats(comparaison, resume_equipe, cibles):
-    """MAE et R² (moyenne ± écart-type sur les plis) et gain sur la moyenne avec son IC 95 % (evaluate_model)."""
+    """MAE et R² (moyenne ± écart-type sur les plis) et gain sur la moyenne avec son IC 95 % (evaluate_model), pour
+    les cibles demandées."""
     equipe = resume_equipe.replace({"mean_baseline": REFERENCE})
-    t = comparaison.merge(equipe[["target", "model", "MAE_gain_vs_baseline", "gain_ci_low", "gain_ci_high"]],
-                          on=["target", "model"], how="left")
+    t = comparaison[comparaison.target.isin(cibles)].merge(
+        equipe[["target", "model", "MAE_gain_vs_baseline", "gain_ci_low", "gain_ci_high"]], on=["target", "model"],
+        how="left")
     t = t.sort_values(["target", "mae_mean"], key=lambda s: s.map(cibles.index) if s.name == "target" else s)
     oui, non = _t("oui", "yes"), _t("non", "no")
     return pd.DataFrame({
@@ -527,7 +922,8 @@ def tableau_resultats(comparaison, resume_equipe, cibles):
             ["" if m == REFERENCE else f"{g:+.2f} {ic(a, b)}" for m, g, a, b
              in zip(t.model, t.MAE_gain_vs_baseline, t.gain_ci_low, t.gain_ci_high)],
         _t("gain démontré", "gain demonstrated"):
-            ["" if m == REFERENCE else (oui if a > 0 else non) for m, a in zip(t.model, t.gain_ci_low)],
+            ["" if m == REFERENCE else (oui if a > 0 else _t("non, moins bien", "no, worse") if b < 0 else non)
+             for m, a, b in zip(t.model, t.gain_ci_low, t.gain_ci_high)],
     }).set_index(pd.MultiIndex.from_frame(t[["target", "model"]], names=[_t("cible", "target"), _t("modèle", "model")]))
 
 
@@ -778,15 +1174,41 @@ def resume_classification(y_bin, P):
         if 0 < yb[i].sum() < len(i):
             aucs.append(roc_auc_score(yb[i], proba[i]))
     classe = (proba >= 0.5).astype(int)
+    auc = float(np.mean([roc_auc_score(yb, P.loc[r].to_numpy(float)) for r in P.index]))
+    bas, kappa = float(np.percentile(aucs, 2.5)), float(cohen_kappa_score(yb, classe))
     return _traduire({
-        "AUC": np.mean([roc_auc_score(yb, P.loc[r].to_numpy(float)) for r in P.index]),
-        "AUC IC bas": np.percentile(aucs, 2.5), "AUC IC haut": np.percentile(aucs, 97.5),
+        "AUC": auc, "AUC IC bas": bas, "AUC IC haut": np.percentile(aucs, 97.5),
         "sensibilité": recall_score(yb, classe), "spécificité": recall_score(yb, classe, pos_label=0),
         "exactitude": (classe == yb).mean(), "exactitude équilibrée": balanced_accuracy_score(yb, classe),
-        "kappa": cohen_kappa_score(yb, classe)})
+        "kappa": kappa, "lecture": lecture_auc_kappa(auc, bas, kappa)})
+
+
+def lecture_auc_kappa(auc, ic_bas, kappa):
+    """Lecture en mots : lien démontré ou non (IC de l'AUC au-dessus de 0,5), force de l'AUC (repères de Hosmer et
+    Lemeshow) et du kappa (repères de Landis et Koch)."""
+    demontre = (_t("lien démontré (IC > 0,5)", "link demonstrated (CI > 0.5)") if ic_bas > 0.5 else
+                _t("aucun lien démontré (l'IC contient 0,5)", "no link demonstrated (CI contains 0.5)"))
+    niveaux_auc = [(0.9, _t("exceptionnelle", "outstanding")), (0.8, _t("excellente", "excellent")),
+                   (0.7, _t("acceptable", "acceptable")), (0.5, _t("faible", "poor"))]
+    force = next((nom for seuil, nom in niveaux_auc if auc >= seuil), _t("nulle", "none"))
+    niveaux_kappa = [(0.8, _t("presque parfait", "almost perfect")), (0.6, _t("fort", "substantial")),
+                     (0.4, _t("modéré", "moderate")), (0.2, _t("faible", "fair")), (0.0, _t("très faible", "slight"))]
+    accord = next((nom for seuil, nom in niveaux_kappa if kappa > seuil), _t("pas mieux que le hasard", "no better than chance"))
+    return _t(f"{demontre} ; discrimination {force} ; accord {accord}",
+              f"{demontre}; {force} discrimination; {accord} agreement")
 
 
 # ===================================================================================== 7. Hypothèses
+def verdict_hypothese(bas, haut):
+    """Lecture d'une hypothèse à partir de l'IC 95 % de son gain sur la moyenne : soutenue (tout l'IC > 0), non
+    soutenue (l'IC contient 0), ou non soutenue avec un modèle moins bon que la moyenne (tout l'IC < 0)."""
+    if bas > 0:
+        return _t("soutenue", "supported")
+    if haut < 0:
+        return _t("non soutenue : moins bien que la moyenne", "not supported: worse than the mean")
+    return _t("non soutenue", "not supported")
+
+
 def graphique_hypotheses(hypotheses, fichier=None):
     gain, bas, haut = hypotheses[_k("gain")], hypotheses[_k("IC bas")], hypotheses[_k("IC haut")]
     fig, ax = plt.subplots(figsize=(7.5, 0.45 * len(hypotheses) + 1.3))
@@ -795,8 +1217,10 @@ def graphique_hypotheses(hypotheses, fichier=None):
     _cote_mieux(ax)
     ax.set(yticks=y_pos, yticklabels=hypotheses.index,
            xlabel=_t("gain de MAE sur le QIT moyen (points) [IC 95 %]", "MAE gain over the mean FSIQ (points) [95% CI]"),
-           title=_t("Hypothèse soutenue si tout l'intervalle est à droite de 0 (zone bleutée)",
-                    "Hypothesis supported if the whole interval is right of 0 (shaded area)"))
+           title=_t("Hypothèse soutenue si tout l'intervalle est à droite de 0 (zone bleutée)\n"
+                    "Tout l'intervalle à gauche de 0 : moins bien que la moyenne",
+                    "Hypothesis supported if the whole interval is right of 0 (shaded area)\n"
+                    "Whole interval left of 0: worse than the mean"))
     plt.tight_layout()
     _montrer(fig, fichier)
 
@@ -862,6 +1286,203 @@ def importances_permutation(Xd, y, plis, n_jobs=-1):
     return pd.concat(morceaux, axis=1).mean(axis=1).sort_values(ascending=False)
 
 
+def _classement_un_pli(Xd, y, tr, te, classification, n_iter):
+    """Un pli : arbre réglé sur les enfants d'entraînement ; importance d'impureté, et valeurs SHAP de chaque enfant
+    de test (avec la valeur de ses variables après préparation)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        import shap                                 # importé ici : seul ce calcul en a besoin
+        modele = "Arbre de classification" if classification else "Arbre de décision"
+        pipe = faire_pipeline(list(Xd.columns), modele, "toutes", n_iter).fit(Xd.loc[tr], y.loc[tr])
+        arbre = pipe.named_steps["modele"].best_estimator_
+        noms = pipe.named_steps["prep"].get_feature_names_out()
+        Xt = np.asarray(pipe[:-1].transform(Xd.loc[te]), dtype=float)
+        valeurs = shap.TreeExplainer(arbre).shap_values(Xt)
+    if isinstance(valeurs, list):                   # classification : une matrice par classe, on garde la classe 1
+        valeurs = valeurs[1]
+    valeurs = np.asarray(valeurs)
+    if valeurs.ndim == 3:
+        valeurs = valeurs[..., 1]
+    return (pd.Series(arbre.feature_importances_, index=noms), pd.DataFrame(valeurs, index=te, columns=noms),
+            pd.DataFrame(Xt, index=te, columns=noms))
+
+
+def _effets_par_quintile(shap_enfants, valeurs, variables):
+    """Effet moyen (valeur SHAP moyenne) de chaque variable dans chaque quintile de cette variable : du cinquième des
+    enfants où elle est la plus basse au cinquième où elle est la plus haute (environ 38 enfants par groupe ici)."""
+    effets = {}
+    for v in variables:
+        ok = valeurs[v].notna() if v in valeurs else pd.Series(False, index=valeurs.index)
+        if ok.sum() >= 25:
+            quintile = pd.qcut(valeurs.loc[ok, v].rank(method="first"), 5, labels=False)
+            effets[v] = shap_enfants.loc[ok, v].groupby(quintile).mean()
+    return effets
+
+
+def _resume_classement(sorties, plis, top):
+    """Moyennes sur les plis, top `top` de chaque pli, accord des top entre plis ; valeurs SHAP de chaque enfant dans
+    la 1re répétition (chaque enfant y est prédit une fois)."""
+    importance = pd.concat([i for i, _, _ in sorties], axis=1).fillna(0).mean(axis=1)
+    moyennes = pd.concat([s.abs().mean() for _, s, _ in sorties], axis=1).fillna(0)
+    tops = [set(c[c > 0].nlargest(top).index) for _, c in moyennes.items()]
+    accord = [len(a & b) / len(a | b) for a, b in combinations(tops, 2) if a | b]
+    r1 = plis[0][0]
+    shap_r1 = pd.concat([s for p, (_, s, _) in zip(plis, sorties) if p[0] == r1]).fillna(0)
+    valeurs_r1 = pd.concat([v for p, (_, _, v) in zip(plis, sorties) if p[0] == r1])
+    return (importance, moyennes.mean(axis=1), tops, float(np.mean(accord)) if accord else float("nan"),
+            shap_r1, valeurs_r1)
+
+
+def classement_variables(Xd, y, plis, classification=False, n_iter=12, top=5, n_hasard=20, n_effets=4, n_jobs=-1):
+    """Classement des variables par un arbre de décision réglé dans chaque pli, de deux façons :
+    - importance d'impureté : baisse totale d'impureté (variance du QI dans les groupes) due aux découpes faites sur
+      la variable, mesurée sur les enfants d'entraînement ;
+    - SHAP : contribution moyenne (en valeur absolue) de la variable aux prédictions des enfants de test.
+    Stabilité : part des plis où la variable est dans le top `top` (SHAP), et accord moyen des top entre plis.
+
+    À PARTIR DE QUAND C'EST UNE BONNE VALEUR : tout le classement est refait `n_hasard` fois avec le QI (ou la classe)
+    mélangé entre enfants, donc sans aucun lien. Une variable compte si son SHAP dépasse le 95e centile du meilleur
+    SHAP obtenu par hasard (« seuil SHAP ») ; de même pour l'importance ; le classement est stable s'il s'accorde
+    nettement plus entre plis que par hasard ; un effet par quintile compte s'il sort de la zone atteinte par hasard.
+
+    Renvoie (tableau, repères, détails) ; détails = valeurs SHAP de chaque enfant (1re répétition), pour les
+    graphiques. Les détails sont des données individuelles : à ne pas partager."""
+    calcul = delayed(_classement_un_pli)
+    sorties = Parallel(n_jobs=n_jobs)(calcul(Xd, y, tr, te, classification, n_iter) for _, _, tr, te in plis)
+    importance, valeurs_shap, tops, accord, shap_r1, valeurs_r1 = _resume_classement(sorties, plis, top)
+
+    tirage = np.random.default_rng(0)               # le hasard : même calcul, QI mélangé
+    melanges = [pd.Series(tirage.permutation(y.to_numpy()), index=y.index) for _ in range(n_hasard)]
+    sorties_h = Parallel(n_jobs=n_jobs)(calcul(Xd, ym, tr, te, classification, n_iter)
+                                        for ym in melanges for _, _, tr, te in plis)
+    max_shap, max_importance, accords_h, max_effet = [], [], [], []
+    for k in range(n_hasard):
+        imp_h, shap_h, _, accord_h, shap1_h, valeurs1_h = _resume_classement(sorties_h[k * len(plis):(k + 1) * len(plis)],
+                                                                            plis, top)
+        max_shap.append(shap_h.max())
+        max_importance.append(imp_h.max())
+        accords_h.append(accord_h)
+        # même règle que le graphique des effets : les n_effets variables les plus utilisées dans ce tirage
+        plus_utilisees = list(shap1_h.abs().mean().nlargest(n_effets).index)
+        effets_h = _effets_par_quintile(shap1_h, valeurs1_h, plus_utilisees)
+        max_effet.append(max((e.abs().max() for e in effets_h.values()), default=0.0))
+    seuil_shap = float(np.quantile(max_shap, 0.95))
+
+    t = pd.DataFrame({"importance (impureté)": importance, "SHAP (moyenne |valeur|)": valeurs_shap,
+                      "dans le top 5 (part des plis)": [sum(f in s for s in tops) / len(tops) for f in valeurs_shap.index]})
+    t["au-dessus du hasard"] = np.where(t["SHAP (moyenne |valeur|)"] > seuil_shap, "oui", "non")
+    t = t.sort_values("SHAP (moyenne |valeur|)", ascending=False)
+    infos = {"plis": len(plis), "classification": classification, "accord": accord,
+             "accord hasard": float(np.nanmean(accords_h)), "seuil accord": float(np.nanquantile(accords_h, 0.95)),
+             "seuil SHAP": seuil_shap,
+             "seuil importance": float(np.quantile(max_importance, 0.95)),
+             "seuil effet": float(np.quantile(max_effet, 0.95)), "mélanges": n_hasard,
+             "spearman": float(t["importance (impureté)"].corr(t["SHAP (moyenne |valeur|)"], method="spearman"))}
+    return _traduire(t), _traduire(infos), {"shap": shap_r1, "valeurs": valeurs_r1, "n_effets": n_effets}
+
+
+def _unite_shap(infos):
+    return (_t("probabilité de la classe 1", "probability of class 1") if infos.get("classification")
+            else _t("points de QI", "IQ points"))
+
+
+def graphique_classement(classement, infos, titre, fichier=None):
+    """Les 10 premières variables (par SHAP) : importance d'impureté à gauche, SHAP à droite, stabilité en %.
+    La zone bleutée commence au seuil du hasard : une barre qui y entre compte plus que le hasard."""
+    haut = classement.head(10)[::-1]
+    imp, sh, stab = haut.iloc[:, 0], haut.iloc[:, 1], haut.iloc[:, 2]
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5), sharey=True)
+    axes[0].barh(haut.index, imp, color="tab:gray", zorder=2)
+    axes[1].barh(haut.index, sh, color="tab:blue", zorder=2)
+    _cote_mieux(axes[0], infos[_k("seuil importance")])
+    _cote_mieux(axes[1], infos[_k("seuil SHAP")])
+    for y, (v, s) in enumerate(zip(sh, stab)):
+        axes[1].text(v, y, f"  {s:.0%}", va="center", fontsize=8.5, color="#52514e", zorder=3)
+    axes[0].set(xlabel=_t("importance d'impureté (arbre)", "impurity importance (tree)"),
+                title=_t(f"au-dessus du hasard à partir de {infos[_k('seuil importance')]:.2f} (zone bleutée)",
+                         f"above chance from {infos[_k('seuil importance')]:.2f} (shaded area)"))
+    axes[1].set(xlabel=_t(f"SHAP : contribution moyenne |valeur| ({_unite_shap(infos)})",
+                          f"SHAP: mean |contribution| ({_unite_shap(infos)})"),
+                title=_t(f"au-dessus du hasard à partir de {infos[_k('seuil SHAP')]:.3g} (zone bleutée)",
+                         f"above chance from {infos[_k('seuil SHAP')]:.3g} (shaded area)"))
+    for ax in axes:
+        ax.title.set_fontsize(9.5)
+    n_plis, accord, seuil = infos[_k("plis")], infos[_k("accord")], infos[_k("seuil accord")]
+    fig.suptitle(f"{titre}\n" + _t(f"% = part des {n_plis} plis où la variable est dans le top 5. Accord des top 5 entre "
+                                   f"plis : {accord:.2f} ; classement stable (fiable) seulement au-dessus de {seuil:.2f}, "
+                                   "seuil du hasard",
+                                   f"% = share of the {n_plis} folds where the variable is in the top 5. Agreement of the "
+                                   f"top 5 between folds: {accord:.2f}; ranking stable (reliable) only above {seuil:.2f}, "
+                                   "the chance threshold"), fontsize=10)
+    plt.tight_layout()
+    _montrer(fig, fichier)
+
+
+def graphique_shap_individuel(details, infos, titre, n=10):
+    """Graphique SHAP « essaim » (beeswarm) : un point par enfant et par variable. Position : de combien la variable
+    a poussé la prédiction de cet enfant ; couleur : valeur de la variable (rouge = haute). GRAPHIQUE INDIVIDUEL :
+    jamais enregistré, à ne pas partager."""
+    with warnings.catch_warnings():                 # shap charge tqdm, qui avertit si ipywidgets manque (sans effet ici)
+        warnings.simplefilter("ignore")
+        import shap
+    sh, valeurs = details["shap"], details["valeurs"]
+    cols = list(sh.abs().mean().sort_values(ascending=False).index[:n])
+    explication = shap.Explanation(values=sh[cols].to_numpy(), data=valeurs.reindex(columns=cols).to_numpy(),
+                                   feature_names=cols)
+    plt.figure()
+    shap.plots.beeswarm(explication, max_display=n, show=False)
+    fig, ax = plt.gcf(), plt.gca()
+    seuil = infos[_k("seuil SHAP")]
+    ax.set_xlabel(_t(f"valeur SHAP : effet sur la prédiction de l'enfant ({_unite_shap(infos)})",
+                     f"SHAP value: effect on the child's prediction ({_unite_shap(infos)})"))
+    ax.set_title(f"{titre}\n" + _t("Graphique individuel (un point = un enfant) : à ne pas partager.\n"
+                                   "À droite de 0 : la variable fait monter la prédiction ; à gauche : descendre. "
+                                   "Rouge = valeur haute, bleu = basse.\n"
+                                   f"Une variable compte si ses points s'écartent nettement de 0 (SHAP moyen > {seuil:.3g}, "
+                                   "seuil du hasard).",
+                                   "Individual-level plot (one dot = one child): do not share.\n"
+                                   "Right of 0: the variable pushes the prediction up; left: down. "
+                                   "Red = high value, blue = low.\n"
+                                   f"A variable matters if its dots move clearly away from 0 (mean SHAP > {seuil:.3g}, "
+                                   "chance threshold)."), fontsize=9.5)
+    try:                                            # légende de couleur dans la langue choisie
+        barre = fig.axes[-1]
+        barre.set_ylabel(_t("valeur de la variable", "feature value"))
+        barre.set_yticklabels([_t("basse", "low"), _t("haute", "high")])
+    except Exception:
+        pass
+    plt.show()
+
+
+def graphique_effets_shap(details, infos, titre, fichier=None):
+    """Graphique SHAP agrégé (partageable) : pour les variables les plus utilisées, l'effet moyen sur la prédiction
+    dans chaque quintile de la variable (un cinquième des enfants par point). Zone grise : le plus grand écart obtenu
+    par hasard (QI mélangé) pour les variables les plus utilisées. Un effet compte s'il sort de la zone grise."""
+    sh, valeurs, n = details["shap"], details["valeurs"], details.get("n_effets", 4)
+    cols = list(sh.abs().mean().sort_values(ascending=False).index[:n])
+    effets = _effets_par_quintile(sh, valeurs, cols)
+    seuil = infos[_k("seuil effet")]
+    par_point = len(sh) // 5
+    fig, axes = plt.subplots(1, max(len(effets), 1), figsize=(3.3 * max(len(effets), 1), 3.6), sharey=True, squeeze=False)
+    for ax, (v, e) in zip(axes[0], effets.items()):
+        ax.axhspan(-seuil, seuil, color="#d9d8d3", zorder=0, label=_t("zone du hasard", "chance zone"))
+        ax.axhline(0, color="k", lw=0.8)
+        ax.plot(range(1, 6), e.to_numpy(), "o-", color="tab:blue", zorder=3)
+        ax.set(xticks=range(1, 6), title=v)
+        ax.set_xticklabels([_t("Q1\nbas", "Q1\nlow"), "Q2", "Q3", "Q4", _t("Q5\nhaut", "Q5\nhigh")])
+        ax.title.set_fontsize(9.5)
+    axes[0][0].set_ylabel(_t(f"effet moyen sur la prédiction\n({_unite_shap(infos)})",
+                             f"mean effect on the prediction\n({_unite_shap(infos)})"))
+    axes[0][0].legend(loc="upper left", fontsize=8, frameon=False)
+    fig.suptitle(f"{titre}\n" + _t(f"Comment la prédiction change quand la variable augmente (quintiles, ~{par_point} "
+                                   f"enfants par point). Un effet compte s'il sort de la zone grise (± {seuil:.3g}, hasard).",
+                                   f"How the prediction changes as the variable increases (quintiles, ~{par_point} children "
+                                   f"per point). An effect matters if it leaves the grey zone (± {seuil:.3g}, chance)."),
+                 fontsize=10)
+    plt.tight_layout()
+    _montrer(fig, fichier)
+
+
 def graphique_importances(importances, titre, fichier=None):
     haut = importances.head(10)[::-1]
     fig, ax = plt.subplots(figsize=(7.5, 4.3))
@@ -892,6 +1513,7 @@ write_predictions = ecrire_predictions
 per_fold_metrics = mesures_par_pli
 comparison_by_model = comparaison_par_modele
 ci = ic
+markdown_table = tableau_markdown
 results_table = tableau_resultats
 plot_gains = graphique_gains
 plot_predicted_observed = graphique_predit_observe
@@ -911,3 +1533,15 @@ conformal_intervals = intervalles_conformes
 plot_intervals = graphique_intervalles
 permutation_importances = importances_permutation
 plot_importances = graphique_importances
+settings_table = tableau_reglages
+preparation_table = tableau_preparation
+chosen_settings = resume_reglages
+multiple_kernel_weights = poids_multi_noyaux
+feature_ranking = classement_variables
+plot_ranking = graphique_classement
+plot_shap_individual = graphique_shap_individuel
+plot_shap_effects = graphique_effets_shap
+auc_kappa_reading = lecture_auc_kappa
+gain_verdict = verdict_gain
+hypothesis_verdict = verdict_hypothese
+MultipleKernelRidge = RidgeMultiNoyaux
